@@ -5,18 +5,13 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="dba34fd2-6535-4acf-8c4c-54b7a4416518" name="Changes" comment="">
-      <change afterPath="$PROJECT_DIR$/assets/images/flamingo.jpeg" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/assets/images/lion.jpeg" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/assets/images/monkey.jpeg" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/assets/images/wildPig.jpeg" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/assets/images/womenLion.jpeg" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/assets/images/zebra.jpeg" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/client/app_client.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/generate_qualities.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/servers/app_server.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/client/app_client.py" beforeDir="false" afterPath="$PROJECT_DIR$/client/app_client.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/client/downloaded.jpg" beforeDir="false" afterPath="$PROJECT_DIR$/client/downloaded.jpg" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/original.jpg" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/protocol/config.py" beforeDir="false" afterPath="$PROJECT_DIR$/protocol/config.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/protocol/rudp.py" beforeDir="false" afterPath="$PROJECT_DIR$/protocol/rudp.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/resize_images.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/servers/app_server.py" beforeDir="false" afterPath="$PROJECT_DIR$/servers/app_server.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -58,6 +53,8 @@
   "keyToString": {
     "Python.app_client.executor": "Run",
     "Python.app_server.executor": "Run",
+    "Python.dhcp_client.executor": "Run",
+    "Python.dhcp_server.executor": "Run",
     "Python.dns_client.executor": "Run",
     "Python.test.executor": "Run",
     "RunOnceActivity.ShowReadmeOnStart": "true",
@@ -122,6 +119,50 @@
       <option name="INPUT_FILE" value="" />
       <method v="2" />
     </configuration>
+    <configuration name="dhcp_client" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
+      <module name="finalProject" />
+      <option name="ENV_FILES" value="" />
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="PARENT_ENVS" value="true" />
+      <envs>
+        <env name="PYTHONUNBUFFERED" value="1" />
+      </envs>
+      <option name="SDK_HOME" value="" />
+      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/client" />
+      <option name="IS_MODULE_SDK" value="true" />
+      <option name="ADD_CONTENT_ROOTS" value="true" />
+      <option name="ADD_SOURCE_ROOTS" value="true" />
+      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/client/dhcp_client.py" />
+      <option name="PARAMETERS" value="" />
+      <option name="SHOW_COMMAND_LINE" value="false" />
+      <option name="EMULATE_TERMINAL" value="false" />
+      <option name="MODULE_MODE" value="false" />
+      <option name="REDIRECT_INPUT" value="false" />
+      <option name="INPUT_FILE" value="" />
+      <method v="2" />
+    </configuration>
+    <configuration name="dhcp_server" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
+      <module name="finalProject" />
+      <option name="ENV_FILES" value="" />
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="PARENT_ENVS" value="true" />
+      <envs>
+        <env name="PYTHONUNBUFFERED" value="1" />
+      </envs>
+      <option name="SDK_HOME" value="" />
+      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/servers" />
+      <option name="IS_MODULE_SDK" value="true" />
+      <option name="ADD_CONTENT_ROOTS" value="true" />
+      <option name="ADD_SOURCE_ROOTS" value="true" />
+      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/servers/dhcp_server.py" />
+      <option name="PARAMETERS" value="" />
+      <option name="SHOW_COMMAND_LINE" value="false" />
+      <option name="EMULATE_TERMINAL" value="false" />
+      <option name="MODULE_MODE" value="false" />
+      <option name="REDIRECT_INPUT" value="false" />
+      <option name="INPUT_FILE" value="" />
+      <method v="2" />
+    </configuration>
     <configuration name="dns_client" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
       <module name="finalProject" />
       <option name="ENV_FILES" value="" />
@@ -144,34 +185,13 @@
       <option name="INPUT_FILE" value="" />
       <method v="2" />
     </configuration>
-    <configuration name="test" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
-      <module name="finalProject" />
-      <option name="ENV_FILES" value="" />
-      <option name="INTERPRETER_OPTIONS" value="" />
-      <option name="PARENT_ENVS" value="true" />
-      <envs>
-        <env name="PYTHONUNBUFFERED" value="1" />
-      </envs>
-      <option name="SDK_HOME" value="" />
-      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$" />
-      <option name="IS_MODULE_SDK" value="true" />
-      <option name="ADD_CONTENT_ROOTS" value="true" />
-      <option name="ADD_SOURCE_ROOTS" value="true" />
-      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/test.py" />
-      <option name="PARAMETERS" value="" />
-      <option name="SHOW_COMMAND_LINE" value="false" />
-      <option name="EMULATE_TERMINAL" value="false" />
-      <option name="MODULE_MODE" value="false" />
-      <option name="REDIRECT_INPUT" value="false" />
-      <option name="INPUT_FILE" value="" />
-      <method v="2" />
-    </configuration>
     <recent_temporary>
       <list>
         <item itemvalue="Python.app_client" />
         <item itemvalue="Python.app_server" />
+        <item itemvalue="Python.dhcp_client" />
+        <item itemvalue="Python.dhcp_server" />
         <item itemvalue="Python.dns_client" />
-        <item itemvalue="Python.test" />
       </list>
     </recent_temporary>
   </component>

@@ -5,6 +5,7 @@ SERVER_HOST = "127.0.0.1"
 DHCP_PORT = 5000
 DNS_PORT = 5001
 APP_PORT = 5002
+APP_TCP_PORT = 5003
 
 BUFFER_SIZE = 65536  # 64KB (נגדיל בגלל UDP)
 TIMEOUT = 0.5        # timeout לרה-טרנסמישן
