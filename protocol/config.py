@@ -20,8 +20,8 @@ USE_COLORS = True
 RUDP_LOG_ACK = False
 RUDP_LOG_SEND = False
 RUDP_LOG_CC = False
-RUDP_LOG_TIMEOUT = True
-RUDP_LOG_LOSS = True
+RUDP_LOG_TIMEOUT =False
+RUDP_LOG_LOSS = False
 RUDP_LOG_WINDOW = False
 
 # סימולציית איבוד

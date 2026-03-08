@@ -17,11 +17,49 @@ from protocol.config import (
 from protocol.logger import Logger
 from protocol.rudp import RUDP
 
+from dhcp_client import DHCPClient
+from dns_client import DNSClient
+
 
 logger = Logger(debug=DEBUG_MODE, use_colors=USE_COLORS)
 
 
 class AppClient:
+    def __init__(self):
+        self.server_host = SERVER_HOST
+        self.bootstrap_network()
+
+    def bootstrap_network(self):
+        """
+        Try DHCP + DNS first.
+        If anything fails, fall back to SERVER_HOST from config.
+        """
+        try:
+            logger.info("Starting DHCP request...")
+            dhcp = DHCPClient()
+            client_ip = dhcp.request_ip()
+
+            if client_ip:
+                logger.success(f"DHCP assigned client IP: {client_ip}")
+            else:
+                logger.warn("DHCP did not return an IP, using fallback host")
+
+            logger.info("Resolving server via DNS...")
+            dns = DNSClient()
+            resolved_ip = dns.resolve("video.local")
+
+            if resolved_ip:
+                self.server_host = resolved_ip
+                logger.success(f"DNS resolved video.local -> {resolved_ip}")
+            else:
+                logger.warn(f"DNS failed, fallback to SERVER_HOST={SERVER_HOST}")
+                self.server_host = SERVER_HOST
+
+        except Exception as e:
+            logger.warn(f"DHCP/DNS bootstrap failed: {e}")
+            logger.warn(f"Using fallback SERVER_HOST={SERVER_HOST}")
+            self.server_host = SERVER_HOST
+
     def recv_exact(self, sock, n):
         data = b""
         while len(data) < n:
@@ -38,7 +76,7 @@ class AppClient:
     def get_manifest(self):
         tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         tcp.settimeout(5)
-        tcp.connect((SERVER_HOST, APP_TCP_PORT))
+        tcp.connect((self.server_host, APP_TCP_PORT))
 
         request = {"type": "GET_MANIFEST"}
         msg = json.dumps(request).encode()
@@ -61,7 +99,7 @@ class AppClient:
     def download_segment_tcp(self, video, quality, segment):
         tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         tcp.settimeout(10)
-        tcp.connect((SERVER_HOST, APP_TCP_PORT))
+        tcp.connect((self.server_host, APP_TCP_PORT))
 
         request = {
             "type": "GET_SEGMENT",
@@ -133,7 +171,7 @@ class AppClient:
             "protocol": protocol,
         }
 
-        sock.sendto(json.dumps(request).encode(), (SERVER_HOST, APP_PORT))
+        sock.sendto(json.dumps(request).encode(), (self.server_host, APP_PORT))
 
         data = bytearray()
         start = time.time()
@@ -179,18 +217,18 @@ class AppClient:
     # =========================
     # VIDEO FILES
     # =========================
+
     def convert_ts_to_mp4(self, ts_path, mp4_path):
         try:
             result = subprocess.run(
                 ["ffmpeg", "-y", "-i", ts_path, "-c", "copy", mp4_path],
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
+                stderr=subprocess.DEVNULL,
             )
             return result.returncode == 0
         except Exception as e:
             logger.warn(f"FFMPEG conversion failed: {e}")
             return False
-
 
     def open_video_file(self, path):
         try:
@@ -276,7 +314,8 @@ if __name__ == "__main__":
 
     logger.info(
         f"Session start | video={video} | total_segments={total_segments} | transport={transport} "
-        f"| mode={protocol if transport == 'RUDP' else 'TCP'} | adaptive={'AUTO' if mode == '1' else 'MANUAL'}"
+        f"| mode={protocol if transport == 'RUDP' else 'TCP'} | adaptive={'AUTO' if mode == '1' else 'MANUAL'} "
+        f"| server={client.server_host}"
     )
 
     for segment in range(total_segments):
