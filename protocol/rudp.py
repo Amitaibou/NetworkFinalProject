@@ -1,486 +1,454 @@
-import socket
-import time
 import pickle
 import random
+import socket
+import time
+from dataclasses import dataclass
 
-from protocol.config import BUFFER_SIZE, TIMEOUT
+from protocol.config import (
+    BUFFER_SIZE,
+    TIMEOUT,
+    WINDOW_SIZE,
+    PACKET_LOSS_RATE,
+    CHUNK_SIZE,
+    DUP_ACK_THRESHOLD,
+    MAX_TIMEOUT_RETRIES,
+    DEBUG_MODE,
+    USE_COLORS,
+    RUDP_LOG_ACK,
+    RUDP_LOG_SEND,
+    RUDP_LOG_CC,
+    RUDP_LOG_TIMEOUT,
+    RUDP_LOG_LOSS,
+    RUDP_LOG_WINDOW,
+)
+from protocol.logger import Logger
 
-# ---------------- CONFIG ----------------
-PACKET_LOSS_RATE = 0.1
-WINDOW_SIZE = 5
-CHUNK_SIZE = 1024
-DUP_ACK_THRESHOLD = 3
 
-# ---------------- LOGGING ----------------
-DEBUG = True
+logger = Logger(debug=DEBUG_MODE, use_colors=USE_COLORS)
 
-def log(msg):
-    if DEBUG:
-        print(msg)
+
+@dataclass
+class SenderStats:
+    sent_packets: int = 0
+    dropped_packets: int = 0
+    retransmissions: int = 0
+    fast_retransmissions: int = 0
+    ack_count: int = 0
+    timeout_events: int = 0
 
 
 class RUDP:
-
-    def __init__(self, sock: socket.socket):
-
+    def __init__(self, sock):
         self.sock = sock
         self.mode = "SR"
 
-        # Congestion control
-        self.cwnd = 1
-        self.ssthresh = 16
-        self.dup_ack_count = 0
-
-        # Flow control
+        self.cwnd = 1.0
+        self.ssthresh = 16.0
         self.rwnd = WINDOW_SIZE
 
-        # sender state
         self.send_base = 0
         self.next_seq = 0
 
-        # receiver state
         self.expected_seq = 0
         self.recv_buffer = {}
 
-        # stats
-        self.stats_sent = 0
-        self.stats_dropped = 0
-        self.stats_retx = 0
-        self.stats_fast_retx = 0
+        self.stats = SenderStats()
 
-        # cwnd graph
-        self.cwnd_history = []
-        self.time_history = []
-        self.start_time = None
-
+    # =========================
+    # MODE / RESET
+    # =========================
 
     def set_mode(self, mode):
         self.mode = mode
-        log(f"[RUDP] Protocol mode = {mode}")
-
-
-    # ---------- Reset ----------
+        logger.debug_log(f"RUDP mode = {mode}")
 
     def reset_sender(self):
-
-        self.cwnd = 1
-        self.ssthresh = 16
-        self.dup_ack_count = 0
-
+        self.cwnd = 1.0
+        self.ssthresh = 16.0
+        self.rwnd = WINDOW_SIZE
         self.send_base = 0
         self.next_seq = 0
-
-        self.stats_sent = 0
-        self.stats_dropped = 0
-        self.stats_retx = 0
-        self.stats_fast_retx = 0
-
-        self.cwnd_history = []
-        self.time_history = []
-
+        self.stats = SenderStats()
 
     def reset_receiver(self):
-
         self.expected_seq = 0
         self.recv_buffer = {}
 
+    # =========================
+    # HELPERS
+    # =========================
+
     def get_sender_stats(self):
-
         return {
-            "sent": self.stats_sent,
-            "dropped": self.stats_dropped,
-            "retransmissions": self.stats_retx,
-            "fast_retransmissions": self.stats_fast_retx
+            "mode": self.mode,
+            "sent_packets": self.stats.sent_packets,
+            "dropped_packets": self.stats.dropped_packets,
+            "retransmissions": self.stats.retransmissions,
+            "fast_retransmissions": self.stats.fast_retransmissions,
+            "ack_count": self.stats.ack_count,
+            "timeout_events": self.stats.timeout_events,
+            "final_cwnd": round(self.cwnd, 2),
+            "final_ssthresh": round(self.ssthresh, 2),
         }
 
-    def get_receiver_stats(self):
+    def make_packet(self, seq, data, fin=False):
+        return {"seq": seq, "data": data, "fin": fin}
 
-        return {
-            "buffer_size": len(self.recv_buffer),
-            "expected_seq": self.expected_seq
-        }
-
-
-    # ---------- Helpers ----------
-
-    def _make_packet(self, seq: int, payload: bytes, fin: bool = False):
-        return {"seq": seq, "data": payload, "fin": fin}
-
-
-    def _send_raw(self, raw: bytes, addr, seq: int, is_retx: bool, is_fast=False):
-
+    def send_raw(self, raw, addr, seq, is_retx=False, is_fast=False):
         if random.random() < PACKET_LOSS_RATE:
-            self.stats_dropped += 1
-            log(f"[RUDP] Simulated packet loss for seq {seq}")
+            self.stats.dropped_packets += 1
+            if RUDP_LOG_LOSS:
+                logger.warn(f"LOSS seq={seq}")
             return
 
         self.sock.sendto(raw, addr)
-        self.stats_sent += 1
+        self.stats.sent_packets += 1
 
         if is_retx:
-            self.stats_retx += 1
+            self.stats.retransmissions += 1
 
         if is_fast:
-            self.stats_fast_retx += 1
+            self.stats.fast_retransmissions += 1
 
+        if RUDP_LOG_SEND:
+            logger.debug_log(f"SEND seq={seq} retx={is_retx} fast={is_fast}")
 
-    # =========================================================
-    # DISPATCHER
-    # =========================================================
+    def recv_ack(self, expected_addr):
+        while True:
+            try:
+                data, addr = self.sock.recvfrom(BUFFER_SIZE)
+            except ConnectionResetError:
+                raise ConnectionAbortedError("peer closed UDP socket")
 
-    def send_bytes(self, data: bytes, addr, chunk_size: int = CHUNK_SIZE):
+            if addr != expected_addr:
+                continue
 
+            try:
+                ack = pickle.loads(data)
+            except Exception:
+                continue
+
+            if not isinstance(ack, dict):
+                continue
+
+            if "ack" not in ack:
+                continue
+
+            return ack
+
+    def _send_fin(self, addr, fin_seq):
+        fin_pkt = self.make_packet(fin_seq, b"", True)
+        fin_raw = pickle.dumps(fin_pkt)
+
+        retries = 0
+        self.sock.settimeout(TIMEOUT)
+
+        while retries < MAX_TIMEOUT_RETRIES:
+            self.send_raw(fin_raw, addr, fin_seq)
+
+            try:
+                ack = self.recv_ack(addr)
+                if ack.get("ack") == fin_seq:
+                    if RUDP_LOG_ACK:
+                        logger.debug_log(f"FIN ack={fin_seq}")
+                    return
+            except ConnectionAbortedError:
+                return
+            except socket.timeout:
+                retries += 1
+                self.stats.timeout_events += 1
+                if RUDP_LOG_TIMEOUT:
+                    logger.warn(f"FIN timeout retry seq={fin_seq}")
+
+        raise TimeoutError("FIN retransmission limit reached")
+
+    # =========================
+    # DISPATCH
+    # =========================
+
+    def send_bytes(self, data, addr):
         if self.mode == "STOP_WAIT":
-            return self.send_stop_and_wait(data, addr, chunk_size)
+            return self.send_stop_wait(data, addr)
+        if self.mode == "GBN":
+            return self.send_gbn(data, addr)
+        return self.send_sr(data, addr)
 
-        elif self.mode == "GBN":
-            return self.send_gbn(data, addr, chunk_size)
+    # =========================
+    # STOP & WAIT
+    # =========================
 
-        elif self.mode == "SR":
-            return self.send_selective_repeat(data, addr, chunk_size)
+    def send_stop_wait(self, data, addr):
+        chunks = [data[i:i + CHUNK_SIZE] for i in range(0, len(data), CHUNK_SIZE)]
+        self.sock.settimeout(TIMEOUT)
 
-
-    # =========================================================
-    # STOP AND WAIT
-    # =========================================================
-
-    def send_stop_and_wait(self, data, addr, chunk_size=CHUNK_SIZE):
-
-        chunks = [data[i:i + chunk_size] for i in range(0, len(data), chunk_size)]
         seq = 0
-
         for chunk in chunks:
-
-            pkt = self._make_packet(seq, chunk)
+            pkt = self.make_packet(seq, chunk)
             raw = pickle.dumps(pkt)
 
-            while True:
-
-                self._send_raw(raw, addr, seq, False)
+            retries = 0
+            while retries < MAX_TIMEOUT_RETRIES:
+                self.send_raw(raw, addr, seq, retries > 0)
 
                 try:
-
-                    self.sock.settimeout(TIMEOUT)
-                    ack_data, _ = self.sock.recvfrom(BUFFER_SIZE)
-                    ack = pickle.loads(ack_data)
-
+                    ack = self.recv_ack(addr)
                     if ack.get("ack") == seq:
-                        log(f"[RUDP] ACK received for seq {seq}")
+                        self.stats.ack_count += 1
+                        if RUDP_LOG_ACK:
+                            logger.debug_log(f"ACK seq={seq}")
                         break
-
+                except ConnectionAbortedError:
+                    return
                 except socket.timeout:
-                    log(f"[RUDP] Timeout retransmitting seq {seq}")
+                    retries += 1
+                    self.stats.timeout_events += 1
+                    if RUDP_LOG_TIMEOUT:
+                        logger.warn(f"Timeout seq={seq}")
+
+            if retries >= MAX_TIMEOUT_RETRIES:
+                raise TimeoutError(f"Stop&Wait failed on seq {seq}")
 
             seq += 1
 
-        log("[RUDP] Stop&Wait stream completed")
+        self._send_fin(addr, seq)
 
-
-    # =========================================================
+    # =========================
     # GO BACK N
-    # =========================================================
+    # =========================
 
-    def send_gbn(self, data, addr, chunk_size=CHUNK_SIZE):
+    def send_gbn(self, data, addr):
+        chunks = [data[i:i + CHUNK_SIZE] for i in range(0, len(data), CHUNK_SIZE)]
+        total = len(chunks)
 
-        log("[RUDP] Using Go-Back-N")
+        window = {}
+        timer = None
+        timeout_rounds = 0
 
-        chunks = [data[i:i + chunk_size] for i in range(0, len(data), chunk_size)]
-        total_packets = len(chunks)
-
-        window_pkts = {}
         self.sock.settimeout(0.05)
 
-        timer_start = None
-
-        while self.send_base < total_packets:
-
-            while self.next_seq < total_packets and self.next_seq < self.send_base + WINDOW_SIZE:
-
-                pkt = self._make_packet(self.next_seq, chunks[self.next_seq])
+        while self.send_base < total:
+            while self.next_seq < total and self.next_seq < self.send_base + WINDOW_SIZE:
+                pkt = self.make_packet(self.next_seq, chunks[self.next_seq])
                 raw = pickle.dumps(pkt)
 
-                window_pkts[self.next_seq] = raw
-                self._send_raw(raw, addr, self.next_seq, False)
+                window[self.next_seq] = raw
+                self.send_raw(raw, addr, self.next_seq)
 
                 if self.send_base == self.next_seq:
-                    timer_start = time.time()
+                    timer = time.time()
 
                 self.next_seq += 1
 
             try:
-
-                ack_data, _ = self.sock.recvfrom(BUFFER_SIZE)
-                ack = pickle.loads(ack_data)
-
+                ack = self.recv_ack(addr)
                 ack_seq = ack.get("ack")
 
-                if ack_seq >= self.send_base:
-
+                if ack_seq is not None and ack_seq >= self.send_base:
+                    self.stats.ack_count += 1
                     self.send_base = ack_seq + 1
+                    timeout_rounds = 0
 
-                    for s in list(window_pkts.keys()):
+                    for s in list(window.keys()):
                         if s < self.send_base:
-                            del window_pkts[s]
+                            del window[s]
 
                     if self.send_base < self.next_seq:
-                        timer_start = time.time()
+                        timer = time.time()
 
-                    log(f"[RUDP] ACK cumulative {ack_seq}")
+                    if RUDP_LOG_ACK:
+                        logger.debug_log(f"GBN cumulative ack={ack_seq}")
 
+            except ConnectionAbortedError:
+                return
             except socket.timeout:
+                if timer and (time.time() - timer) >= TIMEOUT:
+                    timeout_rounds += 1
+                    self.stats.timeout_events += 1
 
-                if timer_start and (time.time() - timer_start) >= TIMEOUT:
+                    if timeout_rounds >= MAX_TIMEOUT_RETRIES:
+                        raise TimeoutError("GBN retransmission limit reached")
 
-                    log("[RUDP] Timeout -> retransmit window")
+                    if RUDP_LOG_TIMEOUT:
+                        logger.warn(f"GBN timeout window={self.send_base}..{self.next_seq - 1}")
 
                     for s in range(self.send_base, self.next_seq):
-
-                        raw = window_pkts.get(s)
-
+                        raw = window.get(s)
                         if raw:
-                            self._send_raw(raw, addr, s, True)
+                            self.send_raw(raw, addr, s, True)
 
-                    timer_start = time.time()
+                    timer = time.time()
 
-        log("[RUDP] GBN stream completed")
+        self._send_fin(addr, self.next_seq)
 
+    # =========================
+    # SELECTIVE REPEAT
+    # =========================
 
-    # =========================================================
-    # SELECTIVE REPEAT + CC + FLOW CONTROL
-    # =========================================================
-
-    def send_selective_repeat(self, data, addr, chunk_size=CHUNK_SIZE):
-
-        chunks = [data[i:i + chunk_size] for i in range(0, len(data), chunk_size)]
-        total_packets = len(chunks)
+    def send_sr(self, data, addr):
+        chunks = [data[i:i + CHUNK_SIZE] for i in range(0, len(data), CHUNK_SIZE)]
+        total = len(chunks)
 
         acked = set()
         send_times = {}
-        window_pkts = {}
+        timeout_counts = {}
+        window = {}
 
         last_ack = -1
-        dup_ack_count = 0
+        dup_count = 0
 
         self.sock.settimeout(0.05)
 
-        self.start_time = time.time()
+        while self.send_base < total:
+            effective = int(min(self.cwnd, self.rwnd, WINDOW_SIZE))
+            effective = max(effective, 1)
 
-        while self.send_base < total_packets:
+            if RUDP_LOG_WINDOW:
+                logger.debug_log(
+                    f"WIN base={self.send_base} next={self.next_seq} "
+                    f"cwnd={self.cwnd:.2f} ssthresh={self.ssthresh:.2f} "
+                    f"rwnd={self.rwnd} eff={effective}"
+                )
 
-            self.cwnd_history.append(self.cwnd)
-            self.time_history.append(time.time() - self.start_time)
-
-            effective_window = int(min(self.cwnd, self.rwnd, WINDOW_SIZE))
-
-            while self.next_seq < total_packets and self.next_seq < self.send_base + effective_window:
-
-                pkt = self._make_packet(self.next_seq, chunks[self.next_seq])
+            while self.next_seq < total and self.next_seq < self.send_base + effective:
+                pkt = self.make_packet(self.next_seq, chunks[self.next_seq])
                 raw = pickle.dumps(pkt)
 
-                window_pkts[self.next_seq] = raw
-
-                self._send_raw(raw, addr, self.next_seq, False)
-
+                window[self.next_seq] = raw
                 send_times[self.next_seq] = time.time()
+                timeout_counts.setdefault(self.next_seq, 0)
+
+                self.send_raw(raw, addr, self.next_seq)
                 self.next_seq += 1
 
-
             try:
+                ack = self.recv_ack(addr)
 
-                ack_data, _ = self.sock.recvfrom(BUFFER_SIZE)
-                ack = pickle.loads(ack_data)
+                cum_ack = ack.get("ack")
+                self.rwnd = int(ack.get("rwnd", WINDOW_SIZE))
 
-                ack_seq = ack.get("ack")
-                self.rwnd = ack.get("rwnd", WINDOW_SIZE)
-
-                if ack_seq is None:
+                if cum_ack is None:
                     continue
 
+                self.stats.ack_count += 1
 
-                for s in range(self.send_base, ack_seq + 1):
+                for s in range(self.send_base, cum_ack + 1):
                     acked.add(s)
 
+                if RUDP_LOG_ACK:
+                    logger.debug_log(f"SR ack={cum_ack} rwnd={self.rwnd}")
 
-                if ack_seq == last_ack:
-                    dup_ack_count += 1
+                if cum_ack == last_ack:
+                    dup_count += 1
                 else:
-                    last_ack = ack_seq
-                    dup_ack_count = 0
-
+                    last_ack = cum_ack
+                    dup_count = 0
 
                 while self.send_base in acked:
-                    window_pkts.pop(self.send_base, None)
+                    window.pop(self.send_base, None)
                     send_times.pop(self.send_base, None)
+                    timeout_counts.pop(self.send_base, None)
                     self.send_base += 1
 
-
-                log(f"[RUDP] ACK cumulative {ack_seq}")
-
-
                 if self.cwnd < self.ssthresh:
-                    self.cwnd += 1
+                    self.cwnd += 1.0
                 else:
-                    self.cwnd += 1 / self.cwnd
+                    self.cwnd += 1.0 / self.cwnd
 
+                if RUDP_LOG_CC:
+                    logger.debug_log(f"CC+ cwnd={self.cwnd:.2f} ssthresh={self.ssthresh:.2f}")
 
-                log(f"[RUDP][CC] cwnd={self.cwnd:.2f} ssthresh={self.ssthresh}")
-
-
-                if dup_ack_count >= DUP_ACK_THRESHOLD:
-
-                    missing = ack_seq + 1
-
+                if dup_count >= DUP_ACK_THRESHOLD:
+                    missing = cum_ack + 1
                     if missing < self.next_seq and missing not in acked:
-
-                        raw = window_pkts.get(missing)
-
-                        if raw:
-
-                            self.ssthresh = max(int(self.cwnd / 2), 2)
+                        raw = window.get(missing)
+                        if raw is not None:
+                            self.ssthresh = max(self.cwnd / 2.0, 2.0)
                             self.cwnd = self.ssthresh
 
-                            log(f"[RUDP] FAST RETRANSMIT seq {missing}")
+                            if RUDP_LOG_CC:
+                                logger.debug_log(
+                                    f"FAST-RTX seq={missing} cwnd={self.cwnd:.2f} ssthresh={self.ssthresh:.2f}"
+                                )
 
-                            self._send_raw(raw, addr, missing, True, True)
-
+                            self.send_raw(raw, addr, missing, True, True)
                             send_times[missing] = time.time()
 
-                    dup_ack_count = 0
+                    dup_count = 0
 
-
+            except ConnectionAbortedError:
+                return
             except socket.timeout:
-
                 now = time.time()
                 timeout_happened = False
 
                 for seq in range(self.send_base, self.next_seq):
-
                     if seq in acked:
                         continue
 
                     if now - send_times.get(seq, 0) >= TIMEOUT:
+                        timeout_counts[seq] = timeout_counts.get(seq, 0) + 1
 
-                        raw = window_pkts.get(seq)
+                        if timeout_counts[seq] >= MAX_TIMEOUT_RETRIES:
+                            raise TimeoutError(f"SR retransmission limit reached on seq {seq}")
 
-                        if raw:
+                        raw = window.get(seq)
+                        if raw is not None:
+                            self.stats.timeout_events += 1
 
-                            log(f"[RUDP] Timeout retransmit seq {seq}")
+                            if RUDP_LOG_TIMEOUT:
+                                logger.warn(f"SR timeout seq={seq}")
 
-                            self._send_raw(raw, addr, seq, True)
-
+                            self.send_raw(raw, addr, seq, True)
                             send_times[seq] = now
-
                             timeout_happened = True
 
-
                 if timeout_happened:
+                    self.ssthresh = max(self.cwnd / 2.0, 2.0)
+                    self.cwnd = 1.0
+                    if RUDP_LOG_CC:
+                        logger.debug_log(f"CC reset cwnd={self.cwnd:.2f} ssthresh={self.ssthresh:.2f}")
 
-                    self.ssthresh = max(int(self.cwnd / 2), 2)
-                    self.cwnd = 1
+        self._send_fin(addr, self.next_seq)
 
-                    log(f"[RUDP] Timeout -> cwnd reset")
-
-
-        # FIN
-
-        fin_seq = self.next_seq
-        fin_pkt = self._make_packet(fin_seq, b"", True)
-        fin_raw = pickle.dumps(fin_pkt)
-
-        while True:
-
-            self._send_raw(fin_raw, addr, fin_seq, False)
-
-            self.sock.settimeout(TIMEOUT)
-
-            try:
-
-                ack_data, _ = self.sock.recvfrom(BUFFER_SIZE)
-                ack = pickle.loads(ack_data)
-
-                if ack.get("ack") == fin_seq:
-                    log(f"[RUDP] FIN ACK received for seq {fin_seq}")
-                    break
-
-            except socket.timeout:
-                log(f"[RUDP] Timeout waiting FIN ACK")
-
-
-        log("[RUDP] SR stream completed")
-
-        self.plot_cwnd()
-
-
-    # =========================================================
-    # RECEIVER
-    # =========================================================
+    # =========================
+    # RECEIVE
+    # =========================
 
     def receive(self):
+        while True:
+            data, addr = self.sock.recvfrom(BUFFER_SIZE)
 
-        data, addr = self.sock.recvfrom(BUFFER_SIZE)
-        pkt = pickle.loads(data)
+            try:
+                pkt = pickle.loads(data)
+            except Exception:
+                continue
 
-        seq = pkt["seq"]
-        fin = pkt.get("fin", False)
-        payload = pkt.get("data", b"")
+            seq = pkt["seq"]
+            payload = pkt.get("data", b"")
+            fin = pkt.get("fin", False)
 
-        if fin:
+            if fin:
+                ack = {
+                    "ack": seq,
+                    "rwnd": max(WINDOW_SIZE - len(self.recv_buffer), 0)
+                }
+                self.sock.sendto(pickle.dumps(ack), addr)
+                return b"", addr, True
+
+            if seq not in self.recv_buffer:
+                self.recv_buffer[seq] = payload
+
+            out = bytearray()
+
+            while self.expected_seq in self.recv_buffer:
+                out.extend(self.recv_buffer[self.expected_seq])
+                del self.recv_buffer[self.expected_seq]
+                self.expected_seq += 1
 
             ack_packet = {
-                "ack": seq,
-                "rwnd": WINDOW_SIZE - len(self.recv_buffer)
+                "ack": self.expected_seq - 1,
+                "rwnd": max(WINDOW_SIZE - len(self.recv_buffer), 0)
             }
 
             self.sock.sendto(pickle.dumps(ack_packet), addr)
-
-            return b"", addr, True
-
-
-        if seq not in self.recv_buffer:
-            self.recv_buffer[seq] = payload
-
-
-        data_out = bytearray()
-
-        while self.expected_seq in self.recv_buffer:
-
-            data_out.extend(self.recv_buffer[self.expected_seq])
-
-            del self.recv_buffer[self.expected_seq]
-
-            self.expected_seq += 1
-
-
-        last_in_order = self.expected_seq - 1
-
-        ack_packet = {
-            "ack": last_in_order,
-            "rwnd": WINDOW_SIZE - len(self.recv_buffer)
-        }
-
-        self.sock.sendto(pickle.dumps(ack_packet), addr)
-
-        return bytes(data_out), addr, False
-
-
-    # =========================================================
-    # CWND GRAPH
-    # =========================================================
-
-    def plot_cwnd(self):
-
-        try:
-
-            import matplotlib.pyplot as plt
-
-            plt.plot(self.time_history, self.cwnd_history)
-
-            plt.title("Congestion Window (cwnd)")
-            plt.xlabel("Time (seconds)")
-            plt.ylabel("cwnd (packets)")
-            plt.grid(True)
-
-            plt.show()
-
-        except:
-            pass
+            return bytes(out), addr, False

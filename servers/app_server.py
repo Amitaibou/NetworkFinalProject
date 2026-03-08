@@ -1,124 +1,93 @@
-import socket
-import os
 import json
-import threading
+import os
+import socket
 import struct
+import threading
 import time
 
-from protocol.config import SERVER_HOST, APP_PORT, APP_TCP_PORT, BUFFER_SIZE
+from protocol.config import (
+    SERVER_HOST,
+    APP_PORT,
+    APP_TCP_PORT,
+    BUFFER_SIZE,
+    DEBUG_MODE,
+    USE_COLORS,
+)
+from protocol.logger import Logger
 from protocol.rudp import RUDP
 
+
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-BASE_PATH = os.path.join(BASE_DIR, "assets", "gallery")
+VIDEOS_PATH = os.path.join(BASE_DIR, "assets", "videos")
+
+logger = Logger(debug=DEBUG_MODE, use_colors=USE_COLORS)
 
 
 class AppServer:
     def __init__(self):
-        # --- UDP (RUDP) ---
         self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.udp_sock.bind((SERVER_HOST, APP_PORT))
+
+        if hasattr(socket, "SIO_UDP_CONNRESET"):
+            try:
+                self.udp_sock.ioctl(socket.SIO_UDP_CONNRESET, False)
+            except Exception:
+                pass
+
         self.rudp = RUDP(self.udp_sock)
 
-        # --- TCP ---
         self.tcp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.tcp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.tcp_sock.bind((SERVER_HOST, APP_TCP_PORT))
         self.tcp_sock.listen(5)
 
-        print(f"[APP] UDP Server running on {SERVER_HOST}:{APP_PORT}")
-        print(f"[APP] TCP Server running on {SERVER_HOST}:{APP_TCP_PORT}")
+        logger.section("VIDEO DASH SERVER STARTED")
+        logger.success(f"UDP  : {SERVER_HOST}:{APP_PORT}")
+        logger.success(f"TCP  : {SERVER_HOST}:{APP_TCP_PORT}")
+        logger.info(f"PATH : {VIDEOS_PATH}")
+        logger.info(f"DEBUG: {DEBUG_MODE}")
 
-    # ---------- Common helpers ----------
     def build_manifest(self):
-        qualities = sorted([
-            q for q in os.listdir(BASE_PATH)
-            if os.path.isdir(os.path.join(BASE_PATH, q))
-        ])
+        videos = {}
 
-        files_sets = []
-        for q in qualities:
-            q_path = os.path.join(BASE_PATH, q)
-            files = [
-                f for f in os.listdir(q_path)
-                if f.lower().endswith((".jpg", ".jpeg", ".png"))
-            ]
-            files_sets.append(set(files))
+        if not os.path.exists(VIDEOS_PATH):
+            return {
+                "type": "MANIFEST_RESPONSE",
+                "videos": {},
+                "qualities": ["low", "mid", "high"],
+            }
 
-        common_files = sorted(list(set.intersection(*files_sets))) if files_sets else []
+        for video in os.listdir(VIDEOS_PATH):
+            v_path = os.path.join(VIDEOS_PATH, video)
+            if not os.path.isdir(v_path):
+                continue
+
+            low_path = os.path.join(v_path, "low")
+            if not os.path.isdir(low_path):
+                continue
+
+            segments = len([
+                f for f in os.listdir(low_path)
+                if f.startswith("seg") and f.endswith(".ts")
+            ])
+
+            videos[video] = segments
+
+        logger.debug_log(f"Manifest videos = {videos}")
 
         return {
             "type": "MANIFEST_RESPONSE",
-            "qualities": qualities,
-            "files": common_files
+            "videos": videos,
+            "qualities": ["low", "mid", "high"],
         }
 
-    def load_image_bytes(self, quality, filename):
-        image_path = os.path.join(BASE_PATH, quality, filename)
-        if not os.path.exists(image_path):
+    def load_segment(self, video, quality, segment):
+        path = os.path.join(VIDEOS_PATH, video, quality, f"seg{segment}.ts")
+        if not os.path.exists(path):
             return None
-        with open(image_path, "rb") as f:
+        with open(path, "rb") as f:
             return f.read()
-
-    # ---------- UDP loop ----------
-    def udp_loop(self):
-        while True:
-            try:
-                data, addr = self.udp_sock.recvfrom(BUFFER_SIZE)
-            except TimeoutError:
-                continue
-
-            message = json.loads(data.decode())
-
-            if message["type"] == "MANIFEST":
-                manifest = self.build_manifest()
-                self.udp_sock.sendto(json.dumps(manifest).encode(), addr)
-                print(f"[APP][UDP] Manifest sent (qualities={manifest['qualities']}, files={len(manifest['files'])})")
-
-            elif message["type"] == "GET_IMAGE":
-                quality = message["quality"]
-                filename = message["filename"]
-
-                # protocol mode for RUDP
-                protocol = message.get("protocol", "SR")  # STOP_WAIT / GBN / SR
-                self.rudp.set_mode(protocol)
-
-                img = self.load_image_bytes(quality, filename)
-                if img is None:
-                    err = {"type": "ERROR", "message": f"File not found: {quality}/{filename}"}
-                    self.udp_sock.sendto(json.dumps(err).encode(), addr)
-                    print(f"[APP][UDP] ERROR: {err['message']}")
-                    continue
-
-                print(f"[APP][UDP] Sending image ({quality}/{filename}) size={len(img)} bytes, RUDP={protocol}")
-
-                self.rudp.reset_sender()
-                start = time.time()
-                self.rudp.send_bytes(img, addr)
-                end = time.time()
-
-                stats = self.rudp.get_sender_stats()
-                transfer_time = end - start
-                throughput = (len(img) / 1024) / transfer_time if transfer_time > 0 else 0.0
-                total_attempts = stats["sent"] + stats["dropped"]
-                loss_rate = (stats["dropped"] / total_attempts) * 100 if total_attempts else 0.0
-
-                print("[APP][UDP] Image streaming completed")
-                print("\n========== RUDP STATISTICS (SENDER) ==========")
-                print(f"Packets sent:             {stats['sent']}")
-                print(f"Simulated loss:           {stats['dropped']}")
-                print(f"Retransmissions:          {stats['retransmissions']}")
-                print(f"Fast retransmissions:     {stats['fast_retransmissions']}")
-                print(f"Loss rate:                {loss_rate:.2f}%")
-                print(f"Transfer time:            {transfer_time:.2f} sec")
-                print(f"Throughput:               {throughput:.2f} KB/s")
-                print("==============================================\n")
-
-    # ---------- TCP server ----------
-    def tcp_loop(self):
-        while True:
-            conn, addr = self.tcp_sock.accept()
-            t = threading.Thread(target=self.handle_tcp_client, args=(conn, addr), daemon=True)
-            t.start()
 
     def recv_exact(self, conn, n):
         buf = b""
@@ -129,44 +98,144 @@ class AppServer:
             buf += chunk
         return buf
 
+    # =========================
+    # UDP
+    # =========================
+
+    def udp_loop(self):
+        logger.section("UDP STREAM LOOP")
+
+        while True:
+            self.udp_sock.settimeout(None)
+
+            try:
+                data, addr = self.udp_sock.recvfrom(BUFFER_SIZE)
+            except ConnectionResetError:
+                logger.warn("UDP ConnectionResetError ignored")
+                continue
+            except Exception as e:
+                logger.error(f"UDP recv error: {e}")
+                continue
+
+            try:
+                message = json.loads(data.decode())
+            except Exception:
+                continue
+
+            msg_type = message.get("type")
+
+            if msg_type == "GET_MANIFEST":
+                manifest = self.build_manifest()
+                self.udp_sock.sendto(json.dumps(manifest).encode(), addr)
+                logger.success(f"UDP manifest sent to {addr}")
+
+            elif msg_type == "GET_SEGMENT":
+                video = message.get("video")
+                quality = message.get("quality")
+                segment = message.get("segment")
+                protocol = message.get("protocol", "SR")
+
+                self.rudp.set_mode(protocol)
+                self.rudp.reset_sender()
+
+                segment_data = self.load_segment(video, quality, segment)
+                if segment_data is None:
+                    logger.error(f"UDP missing segment: {video}/{quality}/seg{segment}.ts")
+                    continue
+
+                logger.info(f"UDP stream start | {video} | {quality} | seg{segment} | mode={protocol}")
+
+                start = time.time()
+                try:
+                    self.rudp.send_bytes(segment_data, addr)
+                except Exception as e:
+                    logger.error(f"RUDP send failed: {e}")
+                    continue
+                end = time.time()
+
+                elapsed = end - start
+                speed = (len(segment_data) / 1024 / elapsed) if elapsed > 0 else 0.0
+                stats = self.rudp.get_sender_stats()
+
+                logger.success(
+                    f"UDP stream done  | seg{segment} | {len(segment_data)} bytes | {speed:.2f} KB/s"
+                )
+                logger.metric(
+                    f"mode={stats['mode']} sent={stats['sent_packets']} "
+                    f"retx={stats['retransmissions']} fast_retx={stats['fast_retransmissions']} "
+                    f"timeouts={stats['timeout_events']} dropped={stats['dropped_packets']} "
+                    f"final_cwnd={stats['final_cwnd']}"
+                )
+
+            else:
+                logger.warn(f"UDP unknown message type: {msg_type}")
+
+    # =========================
+    # TCP
+    # =========================
+
+    def tcp_loop(self):
+        logger.section("TCP STREAM LOOP")
+        while True:
+            conn, addr = self.tcp_sock.accept()
+            thread = threading.Thread(
+                target=self.handle_tcp_client,
+                args=(conn, addr),
+                daemon=True,
+            )
+            thread.start()
+
     def handle_tcp_client(self, conn, addr):
         try:
-            # 1) read length-prefixed JSON request
             raw_len = self.recv_exact(conn, 4)
             (msg_len,) = struct.unpack("!I", raw_len)
+
             raw = self.recv_exact(conn, msg_len)
             message = json.loads(raw.decode())
 
-            if message["type"] == "MANIFEST":
+            msg_type = message.get("type")
+
+            if msg_type == "GET_MANIFEST":
                 manifest = self.build_manifest()
                 payload = json.dumps(manifest).encode()
                 conn.sendall(struct.pack("!I", len(payload)) + payload)
-                print(f"[APP][TCP] Manifest sent to {addr}")
+                logger.success(f"TCP manifest -> {addr}")
 
-            elif message["type"] == "GET_IMAGE":
-                quality = message["quality"]
-                filename = message["filename"]
+            elif msg_type == "GET_SEGMENT":
+                video = message.get("video")
+                quality = message.get("quality")
+                segment = message.get("segment")
 
-                img = self.load_image_bytes(quality, filename)
-                if img is None:
-                    err = {"type": "ERROR", "message": f"File not found: {quality}/{filename}"}
+                data = self.load_segment(video, quality, segment)
+                if data is None:
+                    err = {
+                        "type": "ERROR",
+                        "message": f"segment not found: {video}/{quality}/seg{segment}.ts",
+                    }
                     payload = json.dumps(err).encode()
                     conn.sendall(struct.pack("!I", len(payload)) + payload)
-                    print(f"[APP][TCP] ERROR to {addr}: {err['message']}")
+                    logger.error(f"TCP missing segment: {video}/{quality}/seg{segment}.ts")
                     return
 
-                print(f"[APP][TCP] Sending image ({quality}/{filename}) size={len(img)} bytes to {addr}")
+                header = json.dumps({
+                    "type": "OK",
+                    "size": len(data),
+                }).encode()
 
-                # Send header: OK + size
-                header = json.dumps({"type": "OK", "size": len(img)}).encode()
                 conn.sendall(struct.pack("!I", len(header)) + header)
 
-                # Then send bytes
-                conn.sendall(img)
-                print(f"[APP][TCP] Image sent to {addr}")
+                start = time.time()
+                conn.sendall(data)
+                end = time.time()
+
+                speed = (len(data) / 1024 / (end - start)) if end > start else 0.0
+                logger.success(f"TCP stream done | {video}/{quality}/seg{segment} | {speed:.2f} KB/s")
+
+            else:
+                logger.warn(f"TCP unknown request type: {msg_type}")
 
         except Exception as e:
-            print(f"[APP][TCP] Client {addr} error: {e}")
+            logger.error(f"TCP error: {e}")
         finally:
             try:
                 conn.close()
@@ -174,7 +243,6 @@ class AppServer:
                 pass
 
     def start(self):
-        # run TCP in background thread, UDP in main
         threading.Thread(target=self.tcp_loop, daemon=True).start()
         self.udp_loop()
 

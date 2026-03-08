@@ -1,254 +1,348 @@
-import socket
 import json
+import os
+import socket
+import subprocess
+import sys
 import time
 
-from protocol.config import SERVER_HOST, APP_PORT, APP_TCP_PORT, BUFFER_SIZE
+from protocol.config import (
+    SERVER_HOST,
+    APP_PORT,
+    APP_TCP_PORT,
+    AUTO_LOW_THRESHOLD,
+    AUTO_MID_THRESHOLD,
+    DEBUG_MODE,
+    USE_COLORS,
+)
+from protocol.logger import Logger
 from protocol.rudp import RUDP
 
 
+logger = Logger(debug=DEBUG_MODE, use_colors=USE_COLORS)
+
+
 class AppClient:
+    def recv_exact(self, sock, n):
+        data = b""
+        while len(data) < n:
+            chunk = sock.recv(n - len(data))
+            if not chunk:
+                raise ConnectionError("Connection closed")
+            data += chunk
+        return data
 
-    def __init__(self):
+    # =========================
+    # MANIFEST
+    # =========================
 
-        # UDP socket (for RUDP)
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.rudp = RUDP(self.sock)
-
-    # ---------------- MANIFEST ----------------
     def get_manifest(self):
+        tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        tcp.settimeout(5)
+        tcp.connect((SERVER_HOST, APP_TCP_PORT))
 
-        request = {"type": "MANIFEST"}
+        request = {"type": "GET_MANIFEST"}
+        msg = json.dumps(request).encode()
 
-        self.sock.sendto(
-            json.dumps(request).encode(),
-            (SERVER_HOST, APP_PORT)
-        )
+        tcp.sendall(len(msg).to_bytes(4, "big") + msg)
 
-        data, _ = self.sock.recvfrom(BUFFER_SIZE)
+        raw_len = self.recv_exact(tcp, 4)
+        payload_len = int.from_bytes(raw_len, "big")
 
-        manifest = json.loads(data.decode())
+        payload = self.recv_exact(tcp, payload_len)
+        manifest = json.loads(payload.decode())
 
-        print("[CLIENT] Available qualities:", manifest["qualities"])
-        print("[CLIENT] Available files:", manifest["files"])
-
+        tcp.close()
         return manifest
 
-    # ---------------- AUTO QUALITY ----------------
-    def choose_quality_auto(self, qualities, bandwidth_kb_s):
-
-        if bandwidth_kb_s < 500 and "low" in qualities:
-            return "low"
-
-        if bandwidth_kb_s < 2000 and "mid" in qualities:
-            return "mid"
-
-        return "high" if "high" in qualities else qualities[0]
-
-    # =========================================================
+    # =========================
     # TCP DOWNLOAD
-    # =========================================================
-    def download_image_tcp(self, quality, filename):
+    # =========================
 
-        tcp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-
-        tcp_sock.connect((SERVER_HOST, APP_TCP_PORT))
+    def download_segment_tcp(self, video, quality, segment):
+        tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        tcp.settimeout(10)
+        tcp.connect((SERVER_HOST, APP_TCP_PORT))
 
         request = {
-            "type": "GET_IMAGE",
+            "type": "GET_SEGMENT",
+            "video": video,
             "quality": quality,
-            "filename": filename
+            "segment": segment,
         }
 
         msg = json.dumps(request).encode()
+        tcp.sendall(len(msg).to_bytes(4, "big") + msg)
 
-        tcp_sock.sendall(len(msg).to_bytes(4, "big") + msg)
+        raw_header_len = self.recv_exact(tcp, 4)
+        header_len = int.from_bytes(raw_header_len, "big")
 
-        header_size = int.from_bytes(tcp_sock.recv(4), "big")
-
-        header = tcp_sock.recv(header_size)
-
+        header = self.recv_exact(tcp, header_len)
         header = json.loads(header.decode())
+
+        if header.get("type") == "ERROR":
+            tcp.close()
+            return None, 0.0, {}
 
         size = header["size"]
 
-        image_data = bytearray()
+        data = bytearray()
+        start = time.time()
 
-        start_time = time.time()
-
-        while len(image_data) < size:
-            chunk = tcp_sock.recv(4096)
+        while len(data) < size:
+            chunk = tcp.recv(4096)
             if not chunk:
                 break
-            image_data.extend(chunk)
+            data.extend(chunk)
 
-        end_time = time.time()
+        end = time.time()
+        tcp.close()
 
-        tcp_sock.close()
+        elapsed = end - start
+        bw = (len(data) / 1024 / elapsed) if elapsed > 0 else 0.0
 
-        download_time = end_time - start_time
-        bandwidth = len(image_data) / download_time if download_time > 0 else 0
-
-        print(f"[CLIENT][TCP] Download time: {download_time:.2f} seconds")
-        print(f"[CLIENT][TCP] Size: {len(image_data)} bytes")
-        print(f"[CLIENT][TCP] Bandwidth: {bandwidth/1024:.2f} KB/s")
-
-        with open("downloaded.jpg", "wb") as f:
-            f.write(image_data)
-
-        print(f"[CLIENT][TCP] Image saved (TCP)")
-
-        return download_time, (bandwidth / 1024)
-
-    # =========================================================
-    # RUDP DOWNLOAD
-    # =========================================================
-    def download_image_rudp(self, quality, filename, protocol):
-
-        request = {
-            "type": "GET_IMAGE",
-            "quality": quality,
-            "filename": filename,
-            "protocol": protocol
+        stats = {
+            "transport": "TCP",
+            "bytes": len(data),
+            "elapsed": round(elapsed, 3),
+            "bandwidth_kb_s": round(bw, 2),
         }
 
-        self.sock.sendto(
-            json.dumps(request).encode(),
-            (SERVER_HOST, APP_PORT)
-        )
+        return bytes(data), bw, stats
 
-        image_data = bytearray()
+    # =========================
+    # RUDP DOWNLOAD
+    # =========================
 
-        start_time = time.time()
+    def download_segment_rudp(self, video, quality, segment, protocol):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
-        self.rudp.reset_receiver()
+        if hasattr(socket, "SIO_UDP_CONNRESET"):
+            try:
+                sock.ioctl(socket.SIO_UDP_CONNRESET, False)
+            except Exception:
+                pass
+
+        rudp = RUDP(sock)
+        rudp.reset_receiver()
+
+        request = {
+            "type": "GET_SEGMENT",
+            "video": video,
+            "quality": quality,
+            "segment": segment,
+            "protocol": protocol,
+        }
+
+        sock.sendto(json.dumps(request).encode(), (SERVER_HOST, APP_PORT))
+
+        data = bytearray()
+        start = time.time()
 
         while True:
+            chunk, _, fin = rudp.receive()
 
-            chunk, _, fin = self.rudp.receive()
+            if chunk:
+                data.extend(chunk)
 
             if fin:
                 break
 
-            if chunk:
-                image_data.extend(chunk)
+        end = time.time()
+        sock.close()
 
-        end_time = time.time()
+        elapsed = end - start
+        bw = (len(data) / 1024 / elapsed) if elapsed > 0 else 0.0
 
-        download_time = end_time - start_time
-        size = len(image_data)
+        stats = {
+            "transport": "RUDP",
+            "mode": protocol,
+            "bytes": len(data),
+            "elapsed": round(elapsed, 3),
+            "bandwidth_kb_s": round(bw, 2),
+        }
 
-        bandwidth = size / download_time if download_time > 0 else 0
+        return bytes(data), bw, stats
 
-        print(f"[CLIENT][RUDP] Download time: {download_time:.2f} seconds")
-        print(f"[CLIENT][RUDP] Size: {size} bytes")
-        print(f"[CLIENT][RUDP] Estimated bandwidth: {bandwidth / 1024:.2f} KB/s")
+    # =========================
+    # ADAPTIVE
+    # =========================
 
-        with open("downloaded.jpg", "wb") as f:
-            f.write(image_data)
+    def choose_quality(self, bw_kb_s, qualities):
+        if bw_kb_s < AUTO_LOW_THRESHOLD and "low" in qualities:
+            return "low"
+        if bw_kb_s < AUTO_MID_THRESHOLD and "mid" in qualities:
+            return "mid"
+        if "high" in qualities:
+            return "high"
+        return qualities[0]
 
-        print(f"[CLIENT][RUDP] Image saved ({quality}/{filename})")
+    # =========================
+    # VIDEO FILES
+    # =========================
+    def convert_ts_to_mp4(self, ts_path, mp4_path):
+        try:
+            result = subprocess.run(
+                ["ffmpeg", "-y", "-i", ts_path, "-c", "copy", mp4_path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            return result.returncode == 0
+        except Exception as e:
+            logger.warn(f"FFMPEG conversion failed: {e}")
+            return False
 
-        return download_time, (bandwidth / 1024)
 
-    # =========================================================
-    # TRANSPORT DISPATCHER
-    # =========================================================
-    def download_image(self, quality, filename, transport, protocol=None):
+    def open_video_file(self, path):
+        try:
+            if sys.platform.startswith("win"):
+                os.startfile(path)
+            elif sys.platform == "darwin":
+                subprocess.run(["open", path], check=False)
+            else:
+                subprocess.run(["xdg-open", path], check=False)
+        except Exception as e:
+            logger.warn(f"Could not open file automatically: {e}")
 
-        if transport == "TCP":
-            return self.download_image_tcp(quality, filename)
 
-        else:
-            return self.download_image_rudp(quality, filename, protocol)
+def choose_from_list(prompt, items):
+    print()
+    for i, item in enumerate(items, start=1):
+        print(f"{i}. {item}")
+    idx = int(input(f"\n{prompt}: ").strip())
+    return items[idx - 1]
 
 
-# =========================================================
-# MAIN
-# =========================================================
 if __name__ == "__main__":
+    logger.section("DASH VIDEO CLIENT")
 
     client = AppClient()
 
-    manifest = client.get_manifest()
+    try:
+        manifest = client.get_manifest()
+    except Exception as e:
+        logger.error(f"Manifest failed: {e}")
+        raise SystemExit(1)
 
     qualities = manifest["qualities"]
-    files = manifest["files"]
+    videos = list(manifest["videos"].keys())
+    segments_map = manifest["videos"]
 
-    if not files:
-        print("[CLIENT] No files found")
-        exit(1)
+    if not videos:
+        logger.error(f"No videos found in manifest: {manifest}")
+        raise SystemExit(1)
 
-    # ---------------- FILE ----------------
-    print("\nChoose a file:")
-    for i, f in enumerate(files, start=1):
-        print(f"{i}. {f}")
+    print("Available videos:")
+    video = choose_from_list("Choose video", videos)
+    total_segments = segments_map[video]
 
-    choice = int(input("File number: "))
-    filename = files[choice - 1]
-
-    # ---------------- TRANSPORT ----------------
-    print("\nChoose transport protocol:")
+    print("\nTransport protocol:")
     print("1. TCP")
     print("2. RUDP")
+    transport_choice = input("Choice: ").strip()
+    transport = "TCP" if transport_choice == "1" else "RUDP"
 
-    transport_choice = input("Protocol: ").strip()
-
-    if transport_choice == "1":
-        transport = "TCP"
-    else:
-        transport = "RUDP"
-
-    protocol = None
-
+    protocol = "SR"
     if transport == "RUDP":
-
-        print("\nChoose RUDP algorithm:")
+        print("\nRUDP mode:")
         print("1. Stop & Wait")
         print("2. Go Back N")
         print("3. Selective Repeat")
+        p = input("Choice: ").strip()
 
-        proto_choice = input("RUDP Mode: ").strip()
+        protocol = {
+            "1": "STOP_WAIT",
+            "2": "GBN",
+            "3": "SR",
+        }.get(p, "SR")
 
-        if proto_choice == "1":
-            protocol = "STOP_WAIT"
-        elif proto_choice == "2":
-            protocol = "GBN"
-        else:
-            protocol = "SR"
+    print("\nAdaptive streaming mode:")
+    print("1. Auto")
+    print("2. Manual")
+    mode = input("Choice: ").strip()
 
-        print(f"[CLIENT] Selected RUDP mode: {protocol}")
-
-    # ---------------- MODE ----------------
-    mode = input("\nChoose mode:\n1. AUTO (adaptive)\n2. MANUAL\nMode: ").strip()
-
+    quality = "low"
     if mode == "2":
+        quality = choose_from_list("Choose quality", qualities)
 
-        print("\nChoose quality:")
-        for i, q in enumerate(qualities, start=1):
-            print(f"{i}. {q}")
+    output_ts = "output_video.ts"
+    output_mp4 = "output_video.mp4"
 
-        q_choice = int(input("Quality number: "))
+    for path in (output_ts, output_mp4):
+        if os.path.exists(path):
+            os.remove(path)
 
-        quality = qualities[q_choice - 1]
+    download_stats = []
+    completed_all_segments = True
 
-        client.download_image(quality, filename, transport, protocol)
+    logger.info(
+        f"Session start | video={video} | total_segments={total_segments} | transport={transport} "
+        f"| mode={protocol if transport == 'RUDP' else 'TCP'} | adaptive={'AUTO' if mode == '1' else 'MANUAL'}"
+    )
 
-    else:
+    for segment in range(total_segments):
+        human_segment = segment + 1
+        current_quality = quality
 
-        probe_quality = "low" if "low" in qualities else qualities[0]
-
-        print(f"\n[AUTO] Probing network using quality: {probe_quality}")
-
-        _, bw_kb_s = client.download_image(probe_quality, filename, transport, protocol)
-
-        chosen = client.choose_quality_auto(qualities, bw_kb_s)
-
-        if chosen != probe_quality:
-
-            print(f"[AUTO] Based on bandwidth {bw_kb_s:.2f} KB/s -> choosing: {chosen}")
-
-            client.download_image(chosen, filename, transport, protocol)
-
+        if transport == "TCP":
+            data, bw, stats = client.download_segment_tcp(video, current_quality, segment)
         else:
+            data, bw, stats = client.download_segment_rudp(video, current_quality, segment, protocol)
 
-            print(f"[AUTO] Keeping probe quality: {probe_quality}")
+        if not data:
+            logger.error(f"Segment {human_segment}/{total_segments} not received")
+            completed_all_segments = False
+            break
+
+        with open(output_ts, "ab") as f:
+            f.write(data)
+
+        segment_stat = {
+            "segment": human_segment,
+            "segment_index": segment,
+            "quality": current_quality,
+            **stats,
+        }
+        download_stats.append(segment_stat)
+
+        logger.success(
+            f"SEG {human_segment}/{total_segments} | quality={current_quality} | "
+            f"size={stats['bytes']} bytes | bw={bw:.2f} KB/s"
+        )
+
+        if DEBUG_MODE:
+            logger.metric(str(segment_stat))
+
+        if mode == "1":
+            quality = client.choose_quality(bw, qualities)
+
+    logger.section("VIDEO COMPLETE")
+
+    if not completed_all_segments:
+        print("Download stopped before all segments were received.")
+        print(f"Partial file saved as: {output_ts}")
+        raise SystemExit(1)
+
+    total_bytes = sum(x["bytes"] for x in download_stats)
+    avg_bw = (
+        sum(x["bandwidth_kb_s"] for x in download_stats) / len(download_stats)
+        if download_stats else 0.0
+    )
+
+    quality_hist = {}
+    for x in download_stats:
+        q = x["quality"]
+        quality_hist[q] = quality_hist.get(q, 0) + 1
+
+    logger.success(f"Saved as: {output_ts}")
+    logger.metric(
+        f"Summary | downloaded_segments={len(download_stats)}/{total_segments} | "
+        f"total_bytes={total_bytes} | avg_bw={avg_bw:.2f} KB/s"
+    )
+    logger.metric(f"Quality usage: {quality_hist}")
+
+    if client.convert_ts_to_mp4(output_ts, output_mp4):
+        logger.success(f"Converted successfully to: {output_mp4}")
+        client.open_video_file(output_mp4)
+    else:
+        logger.warn("Could not convert to MP4, opening TS file instead")
+        client.open_video_file(output_ts)
