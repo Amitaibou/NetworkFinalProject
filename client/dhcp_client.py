@@ -1,139 +1,211 @@
 import json
 import socket
+import time
 import uuid
 
-from protocol.config import SERVER_HOST, DHCP_PORT, BUFFER_SIZE, DEBUG_MODE, USE_COLORS
-from protocol.logger import Logger
-
-
-logger = Logger(debug=DEBUG_MODE, use_colors=USE_COLORS)
+from protocol.config import SERVER_HOST, DHCP_PORT, BUFFER_SIZE
 
 
 class DHCPClient:
-    def __init__(self):
+    def __init__(self, lease_file=None):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         self.sock.settimeout(3)
-        self.ip = None
-        self.lease_time = None
-        self.server_id = None
+
+        # bind ל-port זמני מקומי כדי לקבל תשובות
+        self.sock.bind(("", 0))
+
         self.client_id = str(uuid.uuid4())
+        self.ip = None
+        self.server_id = None
+        self.lease_time = 0
+        self.lease_start = 0.0
+
+        self.lease_file = lease_file
+
+    def _send_json(self, payload, addr):
+        self.sock.sendto(json.dumps(payload).encode(), addr)
+
+    def _recv_json(self):
+        data, addr = self.sock.recvfrom(BUFFER_SIZE)
+        return json.loads(data.decode()), addr
+
+    def _now(self):
+        return time.time()
+
+    def _lease_valid(self):
+        if not self.ip or not self.lease_start or not self.lease_time:
+            return False
+        return (self._now() - self.lease_start) < self.lease_time
+
+    def _save_lease(self):
+        if not self.lease_file:
+            return
+        try:
+            payload = {
+                "client_id": self.client_id,
+                "ip": self.ip,
+                "server_id": self.server_id,
+                "lease_time": self.lease_time,
+                "lease_start": self.lease_start,
+            }
+            with open(self.lease_file, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2)
+        except Exception:
+            pass
+
+    def _broadcast_discover(self):
+        xid = str(uuid.uuid4())
+        discover = {
+            "type": "DISCOVER",
+            "xid": xid,
+            "client_id": self.client_id,
+        }
+
+        # קודם ברודקאסט אמיתי
+        try:
+            self._send_json(discover, ("255.255.255.255", DHCP_PORT))
+            return xid
+        except Exception:
+            # fallback ליוניקאסט מקומי כדי לא להיתקע בסביבת פיתוח
+            self._send_json(discover, (SERVER_HOST, DHCP_PORT))
+            return xid
 
     def request_ip(self):
-        try:
-            discover = {
-                "type": "DISCOVER",
-                "client_id": self.client_id
-            }
+        xid = self._broadcast_discover()
 
-            logger.info("Starting DHCP request...")
-            self.sock.sendto(json.dumps(discover).encode(), (SERVER_HOST, DHCP_PORT))
+        offer = None
+        server_addr = None
 
-            data, _ = self.sock.recvfrom(BUFFER_SIZE)
-            offer = json.loads(data.decode())
+        while True:
+            message, addr = self._recv_json()
+            if message.get("type") != "OFFER":
+                continue
+            if message.get("xid") != xid:
+                continue
+            if message.get("client_id") != self.client_id:
+                continue
 
-            if offer.get("type") != "OFFER":
-                logger.error(f"Unexpected DHCP response: {offer}")
-                return None
+            offer = message
+            server_addr = addr
+            break
 
-            requested_ip = offer.get("ip")
-            lease_time = offer.get("lease_time", 0)
-            server_id = offer.get("server_id", SERVER_HOST)
+        requested_ip = offer["ip"]
+        self.server_id = offer.get("server_id", server_addr[0])
 
-            logger.debug_log(
-                f"DHCP OFFER | ip={requested_ip} | lease_time={lease_time}s | server={server_id}"
-            )
+        request = {
+            "type": "REQUEST",
+            "xid": xid,
+            "client_id": self.client_id,
+            "ip": requested_ip,
+            "server_id": self.server_id,
+        }
 
-            request = {
-                "type": "REQUEST",
-                "client_id": self.client_id,
-                "ip": requested_ip
-            }
+        self._send_json(request, server_addr)
 
-            self.sock.sendto(json.dumps(request).encode(), (SERVER_HOST, DHCP_PORT))
+        while True:
+            message, _ = self._recv_json()
+            if message.get("xid") != xid:
+                continue
+            if message.get("client_id") != self.client_id:
+                continue
 
-            data, _ = self.sock.recvfrom(BUFFER_SIZE)
-            ack = json.loads(data.decode())
-
-            if ack.get("type") == "ACK":
-                self.ip = ack.get("ip")
-                self.lease_time = ack.get("lease_time")
-                self.server_id = ack.get("server_id", SERVER_HOST)
+            if message.get("type") == "ACK":
+                self.ip = message["ip"]
+                self.server_id = message.get("server_id", self.server_id)
+                self.lease_time = int(message.get("lease_time", 120))
+                self.lease_start = self._now()
+                self._save_lease()
 
                 print(
-                    f"[DHCP CLIENT] Lease acquired | ip={self.ip} | "
-                    f"lease_time={self.lease_time}s | server={self.server_id}"
+                    f"[DHCP CLIENT] Lease acquired | "
+                    f"ip={self.ip} | lease_time={self.lease_time}s | server={self.server_id}"
                 )
                 return self.ip
 
-            if ack.get("type") == "NAK":
-                logger.warn(f"DHCP request rejected: {ack.get('message', 'unknown error')}")
+            if message.get("type") == "NAK":
+                print("[DHCP CLIENT] Request rejected by server")
                 return None
 
-            logger.error(f"Unexpected DHCP ACK/NAK response: {ack}")
+    def renew_lease(self):
+        if not self.ip or not self.server_id:
+            print("[DHCP CLIENT] No active lease to renew")
             return None
 
-        except socket.timeout:
-            logger.warn("DHCP request timed out")
-            return None
-        except Exception as e:
-            logger.error(f"DHCP failed: {e}")
-            return None
+        xid = str(uuid.uuid4())
+        renew = {
+            "type": "RENEW",
+            "xid": xid,
+            "client_id": self.client_id,
+            "ip": self.ip,
+            "server_id": self.server_id,
+        }
 
-    def renew_ip(self):
-        if not self.ip:
-            logger.warn("Cannot renew DHCP lease before acquiring IP")
-            return None
+        self._send_json(renew, (self.server_id, DHCP_PORT))
 
         try:
-            renew = {
-                "type": "REQUEST",
-                "client_id": self.client_id,
-                "ip": self.ip
-            }
+            while True:
+                message, _ = self._recv_json()
+                if message.get("xid") != xid:
+                    continue
+                if message.get("client_id") != self.client_id:
+                    continue
 
-            logger.info(f"Renewing DHCP lease for {self.ip}...")
-            self.sock.sendto(json.dumps(renew).encode(), (SERVER_HOST, DHCP_PORT))
+                if message.get("type") == "ACK":
+                    self.ip = message["ip"]
+                    self.lease_time = int(message.get("lease_time", self.lease_time or 120))
+                    self.lease_start = self._now()
+                    self._save_lease()
 
-            data, _ = self.sock.recvfrom(BUFFER_SIZE)
-            response = json.loads(data.decode())
+                    print(
+                        f"[DHCP CLIENT] Lease renewed | "
+                        f"ip={self.ip} | lease_time={self.lease_time}s"
+                    )
+                    return self.ip
 
-            if response.get("type") == "ACK":
-                self.lease_time = response.get("lease_time", self.lease_time)
-                logger.success(
-                    f"DHCP lease renewed | ip={self.ip} | lease_time={self.lease_time}s"
-                )
-                return self.ip
-
-            logger.warn(f"DHCP renew failed: {response}")
-            return None
-
+                if message.get("type") == "NAK":
+                    print("[DHCP CLIENT] Lease renewal rejected")
+                    return None
         except socket.timeout:
-            logger.warn("DHCP renew timed out")
-            return None
-        except Exception as e:
-            logger.error(f"DHCP renew failed: {e}")
+            print("[DHCP CLIENT] Renew timeout")
             return None
 
     def release_ip(self):
-        if not self.ip:
+        if not self.ip or not self.server_id:
             return
 
+        release = {
+            "type": "RELEASE",
+            "client_id": self.client_id,
+            "ip": self.ip,
+            "server_id": self.server_id,
+        }
+
         try:
-            release = {
-                "type": "RELEASE",
-                "client_id": self.client_id,
-                "ip": self.ip
-            }
-
-            self.sock.sendto(json.dumps(release).encode(), (SERVER_HOST, DHCP_PORT))
-            logger.info(f"Released DHCP IP: {self.ip}")
+            self._send_json(release, (self.server_id, DHCP_PORT))
+            print(f"[DHCP CLIENT] Released IP {self.ip}")
+        except Exception:
+            pass
+        finally:
             self.ip = None
-            self.lease_time = None
+            self.lease_time = 0
+            self.lease_start = 0.0
 
-        except Exception as e:
-            logger.warn(f"DHCP release failed: {e}")
+    def request_or_renew(self):
+        if self._lease_valid():
+            return self.ip
+
+        if self.ip:
+            renewed = self.renew_lease()
+            if renewed:
+                return renewed
+
+        return self.request_ip()
 
 
 if __name__ == "__main__":
     client = DHCPClient()
-    client.request_ip()
+    try:
+        client.request_ip()
+    finally:
+        client.sock.close()
