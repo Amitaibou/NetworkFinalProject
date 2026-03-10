@@ -194,13 +194,13 @@ Auto	Client estimates bandwidth and adjusts the next segment quality
 
 ---
 
-### 📝 Usage Flow
+## 📝 Usage Flow
 
 - The client requests an IP address from the DHCP server.
 - The client queries the DNS server for a domain name.
 - If the domain points to the video application server, the client continues.
-- The client downloads the video manifest.
-- The user selects:
+- The client downloads the video manifest. 
+#### The user selects:
 1.  video
 2.  transport protocol
 3. an RUDP mode (if needed)
@@ -208,7 +208,7 @@ Auto	Client estimates bandwidth and adjusts the next segment quality
 5. The client downloads all video segments.
 6. The output is saved locally and reconstructed into an MP4 file.
 ---
-### 📊 Expected Behavior
+## 📊 Expected Behavior
 
 - TCP usually provides very fast and stable transfer on localhost.
 - RUDP makes packet loss, acknowledgments, and retransmissions more visible.
@@ -219,7 +219,7 @@ Auto	Client estimates bandwidth and adjusts the next segment quality
 
 --- 
 
-## **Developed by**  
+# **Developed by**  
 **Amitai Buzaglo · Ofri Ben Shabo · Daniel Kfir**
 
 **Department:** Computer Science  

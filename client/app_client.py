@@ -21,14 +21,24 @@ from client.dhcp_client import DHCPClient
 from client.dns_client import DNSClient
 
 
+# לוגר מרכזי של הקליינט
 logger = Logger(debug=DEBUG_MODE, use_colors=USE_COLORS)
 
 
 class AppClient:
+    """
+    המחלקה הזאת אחראית על כל התקשורת מול שרת הווידאו.
+    בפועל היא יודעת: להביא manifest
+    - להוריד סגמנט דרך TCP - להוריד סגמנט דרך RUDP
+- לבחור איכות במצב אדפטיבי - לשמור/להמיר/לפתוח את הקובץ בסוף
+    """
+
     def __init__(self, server_host=SERVER_HOST):
         self.server_host = server_host
 
     def recv_exact(self, sock, n):
+        # פונקציית עזר: קוראת בדיוק n בתים מהסוקט
+        # שימושי כשאנחנו יודעים מראש מה אורך ההודעה
         data = b""
         while len(data) < n:
             chunk = sock.recv(n - len(data))
@@ -42,6 +52,8 @@ class AppClient:
     # =========================
 
     def get_manifest(self):
+        # ה-manifest מתקבל דרך TCP ומכיל:
+        # אילו סרטונים קיימים, כמה סגמנטים יש לכל אחד, ואילו איכויות זמינות
         tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         tcp.settimeout(5)
         tcp.connect((self.server_host, APP_TCP_PORT))
@@ -49,6 +61,7 @@ class AppClient:
         request = {"type": "GET_MANIFEST"}
         msg = json.dumps(request).encode()
 
+        # קודם שולחים את אורך ההודעה, ואז את ההודעה עצמה
         tcp.sendall(len(msg).to_bytes(4, "big") + msg)
 
         raw_len = self.recv_exact(tcp, 4)
@@ -65,6 +78,8 @@ class AppClient:
     # =========================
 
     def download_segment_tcp(self, video, quality, segment):
+        # הורדת סגמנט בודד דרך TCP
+        # כאן האמינות מגיעה מהפרוטוקול TCP עצמו
         tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         tcp.settimeout(10)
         tcp.connect((self.server_host, APP_TCP_PORT))
@@ -79,6 +94,7 @@ class AppClient:
         msg = json.dumps(request).encode()
         tcp.sendall(len(msg).to_bytes(4, "big") + msg)
 
+        # קודם מקבלים כותרת עם מידע על הסגמנט
         raw_header_len = self.recv_exact(tcp, 4)
         header_len = int.from_bytes(raw_header_len, "big")
 
@@ -94,6 +110,7 @@ class AppClient:
         data = bytearray()
         start = time.perf_counter()
 
+        # מורידים את כל הסגמנט עד שנקבל את כל הגודל שהשרת הצהיר עליו
         while len(data) < size:
             chunk = tcp.recv(4096)
             if not chunk:
@@ -103,6 +120,7 @@ class AppClient:
         end = time.perf_counter()
         tcp.close()
 
+        # perf_counter נותן מדידה מדויקת יותר לזמני ריצה קצרים
         elapsed = max(end - start, 0.000001)
         bw = (len(data) / 1024) / elapsed
 
@@ -120,8 +138,10 @@ class AppClient:
     # =========================
 
     def download_segment_rudp(self, video, quality, segment, protocol):
+        # הורדת סגמנט דרך UDP + שכבת אמינות שבנינו בעצמנו
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
+        # תיקון מוכר ל-Windows כדי להימנע מ-UDP reset במצבים מסוימים
         if hasattr(socket, "SIO_UDP_CONNRESET"):
             try:
                 sock.ioctl(socket.SIO_UDP_CONNRESET, False)
@@ -139,11 +159,13 @@ class AppClient:
             "protocol": protocol,
         }
 
+        # הבקשה עצמה נשלחת ב-UDP לשרת האפליקציה
         sock.sendto(json.dumps(request).encode(), (self.server_host, APP_PORT))
 
         data = bytearray()
         start = time.time()
 
+        # מקבלים חתיכות מידע עד שמגיע FIN מהצד השני
         while True:
             chunk, _, fin = rudp.receive()
 
@@ -174,6 +196,8 @@ class AppClient:
     # =========================
 
     def choose_quality(self, bw_kb_s, qualities):
+        # בחירת איכות פשוטה לפי רוחב הפס שנמדד בסגמנט הקודם
+        # זו לוגיקה בסיסית של adaptive streaming
         if bw_kb_s < AUTO_LOW_THRESHOLD and "low" in qualities:
             return "low"
         if bw_kb_s < AUTO_MID_THRESHOLD and "mid" in qualities:
@@ -187,6 +211,8 @@ class AppClient:
     # =========================
 
     def convert_ts_to_mp4(self, ts_path, mp4_path):
+        # בסוף ההורדה אנחנו מנסים להמיר את קובץ ה-TS ל-MP4
+        # כדי שיהיה יותר נוח לנגן אותו
         try:
             result = subprocess.run(
                 ["ffmpeg", "-y", "-i", ts_path, "-c", "copy", mp4_path],
@@ -199,6 +225,7 @@ class AppClient:
             return False
 
     def open_video_file(self, path):
+        # פתיחה אוטומטית של הקובץ לפי מערכת ההפעלה
         try:
             if sys.platform.startswith("win"):
                 os.startfile(path)
@@ -215,6 +242,7 @@ class AppClient:
 # =========================
 
 def choose_from_list(prompt, items):
+    # תפריט בחירה כללי מרשימה
     print()
     for i, item in enumerate(items, start=1):
         print(f"{i}. {item}")
@@ -272,6 +300,7 @@ def choose_stream_mode():
 
 
 def choose_dns_name():
+    # כאן המשתמש בוחר איזה שם דומיין לפתור דרך DNS
     domains = [
         "video.local",
         "app.local",
@@ -296,6 +325,7 @@ def choose_dns_name():
 
 
 def ask_yes_no(prompt):
+    # קלט פשוט של כן/לא
     while True:
         value = input(f"{prompt} ").strip().lower()
         if value in {"y", "yes", "1"}:
@@ -306,15 +336,18 @@ def ask_yes_no(prompt):
 
 
 def safe_name(text):
+    # מנקה שם קובץ/תיקייה כדי שלא יהיו תווים בעייתיים
     cleaned = re.sub(r"[^\w\-\.]+", "_", text.strip())
     return cleaned.strip("_") or "video"
 
 
 def ensure_dir(path):
+    # יוצר תיקייה אם היא לא קיימת
     os.makedirs(path, exist_ok=True)
 
 
 def build_output_paths(video, transport, mode_label, quality_label):
+    # בונה נתיבי פלט לפי שם הסרט והבחירות של המשתמש
     video_safe = safe_name(video)
 
     downloads_root = "downloads"
@@ -329,11 +362,13 @@ def build_output_paths(video, transport, mode_label, quality_label):
 
 
 def remove_if_exists(path):
+    # אם קובץ ישן כבר קיים, מוחקים אותו כדי לא לערבב ריצות
     if os.path.exists(path):
         os.remove(path)
 
 
 def print_summary(download_stats, total_segments):
+    # סיכום סטטיסטי כללי בסוף ההורדה
     total_bytes = sum(x["bytes"] for x in download_stats)
     avg_bw = (
         sum(x["bandwidth_kb_s"] for x in download_stats) / len(download_stats)
@@ -353,6 +388,8 @@ def print_summary(download_stats, total_segments):
 
 
 def run_single_download(client):
+    # הרצה מלאה של הורדה אחת:
+    # מביאים manifest, בוחרים פרמטרים, מורידים את כל הסגמנטים, ושומרים תוצאה
     try:
         manifest = client.get_manifest()
     except Exception as e:
@@ -409,6 +446,7 @@ def run_single_download(client):
     logger.info(f"Output directory: {video_dir}")
 
     for segment in range(total_segments):
+        #  לתקן אינדקסים לספירה שתתחיל מ-1
         human_segment = segment + 1
         current_quality = quality
 
@@ -423,6 +461,7 @@ def run_single_download(client):
             break
 
         with open(output_ts, "ab") as f:
+            # שומרים כל סגמנט בסוף הקובץ הקיים
             f.write(data)
 
         segment_stat = {
@@ -441,6 +480,7 @@ def run_single_download(client):
         if DEBUG_MODE:
             logger.metric(str(segment_stat))
 
+        # במצב אוטומטי האיכות של הסגמנט הבא תיקבע לפי הביצועים של הנוכחי
         if mode == "1":
             quality = client.choose_quality(bw, qualities)
 
@@ -465,6 +505,7 @@ def run_single_download(client):
 if __name__ == "__main__":
     logger.section("DASH VIDEO CLIENT")
 
+    # קודם כל הלקוח מנסה לקבל כתובת IP דרך DHCP
     dhcp_client = DHCPClient()
     dns_client = DNSClient()
 
@@ -476,6 +517,7 @@ if __name__ == "__main__":
     else:
         logger.warn("DHCP did not return an IP, continuing without lease")
 
+    # הלולאה הראשית: כל פעם אפשר לבחור דומיין, ואם זה שרת וידאו אז גם להוריד סרט
     while True:
         domain = choose_dns_name()
 
@@ -492,6 +534,7 @@ if __name__ == "__main__":
 
         logger.success(f"DNS resolved {domain} -> {resolved_ip}")
 
+        # אם זה לא הדומיין של שרת האפליקציה, רק מציגים את ה-IP ולא נכנסים למסך הורדה
         if domain not in {"video.local", "app.local"}:
             print(f"\nResolved {domain} -> {resolved_ip}")
             print("This domain is not the video application server.")

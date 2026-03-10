@@ -29,6 +29,7 @@ logger = Logger(debug=DEBUG_MODE, use_colors=USE_COLORS)
 
 @dataclass
 class SenderStats:
+    # סטטיסטיקות של צד השולח, כדי שיהיה אפשר להציג בסוף תמונה כללית
     sent_packets: int = 0
     dropped_packets: int = 0
     retransmissions: int = 0
@@ -38,17 +39,32 @@ class SenderStats:
 
 
 class RUDP:
+    """
+    מימוש של Reliable UDP עבור הפרויקט.
+    הרעיון כאן הוא לבנות שכבת אמינות מעל UDP ולתמוך ב-3 מצבים:
+    - Stop & Wait
+    - Go-Back-N
+    - Selective Repeat
+
+    בנוסף יש כאן גם לוגיקה בסיסית של congestion/window handling,
+    סטטיסטיקות, ויכולת סימולציה של איבוד פאקטות.
+    """
+
     def __init__(self, sock):
         self.sock = sock
         self.mode = "SR"
 
+        # משתנים שקשורים לניהול חלון וגודש
         self.cwnd = 1.0
         self.ssthresh = 16.0
         self.rwnd = WINDOW_SIZE
 
+        # send_base = הסיקוונס הכי ישן שעדיין לא אושר
+        # next_seq = הסיקוונס הבא שנשלח
         self.send_base = 0
         self.next_seq = 0
 
+        # expected_seq = הסיקוונס הבא שהמקבל מחכה לו לפי הסדר
         self.expected_seq = 0
         self.recv_buffer = {}
 
@@ -59,10 +75,12 @@ class RUDP:
     # =========================
 
     def set_mode(self, mode):
+        # בחירת מצב העבודה של RUDP
         self.mode = mode
         logger.debug_log(f"RUDP mode = {mode}")
 
     def reset_sender(self):
+        # איפוס מצב השולח לפני שליחת סגמנט חדש
         self.cwnd = 1.0
         self.ssthresh = 16.0
         self.rwnd = WINDOW_SIZE
@@ -71,6 +89,7 @@ class RUDP:
         self.stats = SenderStats()
 
     def reset_receiver(self):
+        # איפוס מצב המקבל לפני קבלת סגמנט חדש
         self.expected_seq = 0
         self.recv_buffer = {}
 
@@ -79,6 +98,7 @@ class RUDP:
     # =========================
 
     def get_sender_stats(self):
+        # מחזיר מילון סטטיסטיקות שאפשר להציג בלוגים או לשמור לסיכום
         return {
             "mode": self.mode,
             "sent_packets": self.stats.sent_packets,
@@ -92,9 +112,12 @@ class RUDP:
         }
 
     def make_packet(self, seq, data, fin=False):
+        # ייצוג פשוט של פאקט בתור dict
         return {"seq": seq, "data": data, "fin": fin}
 
     def send_raw(self, raw, addr, seq, is_retx=False, is_fast=False):
+        # כאן מתבצעת גם סימולציית packet loss:
+        # אם "נפל" לפי ההגרלה, הפאקט כאילו אבד ולא נשלח בפועל
         if random.random() < PACKET_LOSS_RATE:
             self.stats.dropped_packets += 1
             if RUDP_LOG_LOSS:
@@ -114,6 +137,8 @@ class RUDP:
             logger.debug_log(f"SEND seq={seq} retx={is_retx} fast={is_fast}")
 
     def recv_ack(self, expected_addr):
+        # מחכה ל-ACK חוקי מה-peer הנכון
+        # אם מגיע מידע לא קשור / לא בפורמט הנכון פשוט מתעלמים וממשיכים
         while True:
             try:
                 data, addr = self.sock.recvfrom(BUFFER_SIZE)
@@ -137,6 +162,8 @@ class RUDP:
             return ack
 
     def _send_fin(self, addr, fin_seq):
+        # בסוף הסטרים שולחים FIN כדי לסמן "אין יותר דאטה"
+        # וגם עליו מחכים לאישור, כדי לסיים בצורה מסודרת
         fin_pkt = self.make_packet(fin_seq, b"", True)
         fin_raw = pickle.dumps(fin_pkt)
 
@@ -167,6 +194,7 @@ class RUDP:
     # =========================
 
     def send_bytes(self, data, addr):
+        # dispatcher מרכזי לפי מצב העבודה שנבחר
         if self.mode == "STOP_WAIT":
             return self.send_stop_wait(data, addr)
         if self.mode == "GBN":
@@ -178,6 +206,8 @@ class RUDP:
     # =========================
 
     def send_stop_wait(self, data, addr):
+        # במצב הזה שולחים פאקט אחד ומחכים ל-ACK לפני שממשיכים
+        # זה המצב הכי פשוט, אבל גם הכי איטי
         chunks = [data[i:i + CHUNK_SIZE] for i in range(0, len(data), CHUNK_SIZE)]
         self.sock.settimeout(TIMEOUT)
 
@@ -217,6 +247,8 @@ class RUDP:
     # =========================
 
     def send_gbn(self, data, addr):
+        # ב-GBN אפשר לשלוח חלון של כמה פאקטים קדימה,
+        # אבל אם יש איבוד/timeout חוזרים מה-packet הלא מאושר הראשון
         chunks = [data[i:i + CHUNK_SIZE] for i in range(0, len(data), CHUNK_SIZE)]
         total = len(chunks)
 
@@ -227,6 +259,7 @@ class RUDP:
         self.sock.settimeout(0.05)
 
         while self.send_base < total:
+            # ממלאים את החלון כל עוד יש מקום
             while self.next_seq < total and self.next_seq < self.send_base + WINDOW_SIZE:
                 pkt = self.make_packet(self.next_seq, chunks[self.next_seq])
                 raw = pickle.dumps(pkt)
@@ -234,6 +267,7 @@ class RUDP:
                 window[self.next_seq] = raw
                 self.send_raw(raw, addr, self.next_seq)
 
+                # הטיימר מתייחס לפאקט הישן ביותר שלא אושר
                 if self.send_base == self.next_seq:
                     timer = time.time()
 
@@ -243,11 +277,13 @@ class RUDP:
                 ack = self.recv_ack(addr)
                 ack_seq = ack.get("ack")
 
+                # ACK ב-GBN הוא cumulative
                 if ack_seq is not None and ack_seq >= self.send_base:
                     self.stats.ack_count += 1
                     self.send_base = ack_seq + 1
                     timeout_rounds = 0
 
+                    # מנקים מהחלון כל מה שכבר אושר
                     for s in list(window.keys()):
                         if s < self.send_base:
                             del window[s]
@@ -271,6 +307,7 @@ class RUDP:
                     if RUDP_LOG_TIMEOUT:
                         logger.warn(f"GBN timeout window={self.send_base}..{self.next_seq - 1}")
 
+                    # ב-GBN משדרים מחדש את כל החלון מהבסיס
                     for s in range(self.send_base, self.next_seq):
                         raw = window.get(s)
                         if raw:
@@ -285,6 +322,8 @@ class RUDP:
     # =========================
 
     def send_sr(self, data, addr):
+        # ב-SR כל פאקט מטופל יותר "אישית":
+        # אפשר לאשר חלקים מהחלון ולשדר מחדש רק את מה שבאמת חסר
         chunks = [data[i:i + CHUNK_SIZE] for i in range(0, len(data), CHUNK_SIZE)]
         total = len(chunks)
 
@@ -299,6 +338,7 @@ class RUDP:
         self.sock.settimeout(0.05)
 
         while self.send_base < total:
+            # גודל חלון אפקטיבי לפי congestion window, receiver window והגדרות הפרויקט
             effective = int(min(self.cwnd, self.rwnd, WINDOW_SIZE))
             effective = max(effective, 1)
 
@@ -309,6 +349,7 @@ class RUDP:
                     f"rwnd={self.rwnd} eff={effective}"
                 )
 
+            # שולחים כל מה שנכנס כרגע בחלון
             while self.next_seq < total and self.next_seq < self.send_base + effective:
                 pkt = self.make_packet(self.next_seq, chunks[self.next_seq])
                 raw = pickle.dumps(pkt)
@@ -331,24 +372,29 @@ class RUDP:
 
                 self.stats.ack_count += 1
 
+                # מסמנים כל מה שאושר עד ה-cumulative ack
                 for s in range(self.send_base, cum_ack + 1):
                     acked.add(s)
 
                 if RUDP_LOG_ACK:
                     logger.debug_log(f"SR ack={cum_ack} rwnd={self.rwnd}")
 
+                # ספירת duplicate ACK כדי לאפשר fast retransmit
                 if cum_ack == last_ack:
                     dup_count += 1
                 else:
                     last_ack = cum_ack
                     dup_count = 0
 
+                # מקדמים את בסיס החלון כל עוד יש ACK רציף
                 while self.send_base in acked:
                     window.pop(self.send_base, None)
                     send_times.pop(self.send_base, None)
                     timeout_counts.pop(self.send_base, None)
                     self.send_base += 1
 
+                # עדכון congestion window בסיסי:
+                # slow start ואז גדילה עדינה יותר
                 if self.cwnd < self.ssthresh:
                     self.cwnd += 1.0
                 else:
@@ -357,6 +403,7 @@ class RUDP:
                 if RUDP_LOG_CC:
                     logger.debug_log(f"CC+ cwnd={self.cwnd:.2f} ssthresh={self.ssthresh:.2f}")
 
+                # Fast retransmit אחרי כמה duplicate ACKs
                 if dup_count >= DUP_ACK_THRESHOLD:
                     missing = cum_ack + 1
                     if missing < self.next_seq and missing not in acked:
@@ -381,6 +428,7 @@ class RUDP:
                 now = time.time()
                 timeout_happened = False
 
+                # ב-SR בודקים timeout לכל פאקט בנפרד
                 for seq in range(self.send_base, self.next_seq):
                     if seq in acked:
                         continue
@@ -402,6 +450,7 @@ class RUDP:
                             send_times[seq] = now
                             timeout_happened = True
 
+                # timeout נחשב סימן לעומס / בעיה, אז מקטינים חלון
                 if timeout_happened:
                     self.ssthresh = max(self.cwnd / 2.0, 2.0)
                     self.cwnd = 1.0
@@ -415,6 +464,9 @@ class RUDP:
     # =========================
 
     def receive(self):
+        # צד המקבל:
+        # מקבל פאקטים, שומר מה שהגיע, מחזיר ACK,
+        # ומוסר החוצה רק מידע שהפך להיות רציף מהנקודה הצפויה
         while True:
             data, addr = self.sock.recvfrom(BUFFER_SIZE)
 
@@ -435,11 +487,13 @@ class RUDP:
                 self.sock.sendto(pickle.dumps(ack), addr)
                 return b"", addr, True
 
+            # נשמור את הפאקט רק אם עדיין לא קיבלנו אותו
             if seq not in self.recv_buffer:
                 self.recv_buffer[seq] = payload
 
             out = bytearray()
 
+            # כל עוד יש לנו רצף מלא מהנקודה הצפויה - נוציא אותו החוצה
             while self.expected_seq in self.recv_buffer:
                 out.extend(self.recv_buffer[self.expected_seq])
                 del self.recv_buffer[self.expected_seq]
