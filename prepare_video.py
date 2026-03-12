@@ -8,6 +8,10 @@ from pathlib import Path
 # PATHS
 # =========================
 
+print("Preparing DASH video segments...")
+print("Source videos directory: video_sources/")
+print("Output directory: assets/videos/")
+
 # התיקייה שבה נמצא הקובץ הנוכחי
 BASE_DIR = Path(__file__).resolve().parent
 

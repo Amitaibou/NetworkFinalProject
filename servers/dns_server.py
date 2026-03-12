@@ -23,7 +23,7 @@ class DNSServer:
             "amitai-home.local": {"ip": "10.0.0.10", "ttl": 600},
             "ofri-home.local": {"ip": "10.0.0.11", "ttl": 600},
             "daniel-home.local": {"ip": "10.0.0.12", "ttl": 600},
-            "anna-home.local": {"ip": "10.0.0.13", "ttl": 600},
+            "anna-office.local": {"ip": "10.0.0.13", "ttl": 600},
         }
 
         print(f"[DNS] Server running on {SERVER_HOST}:{DNS_PORT}")

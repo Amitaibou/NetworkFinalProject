@@ -7,6 +7,145 @@
 ![University](https://img.shields.io/badge/Ariel%20University-Computer%20Science-purple)
 
 
+## ⚙️ Requirements
+
+- Python 3.10+
+- FFmpeg ( used for TS to MP4 conversion)
+
+Tested on:
+- Windows 11
+- Python 3.10
+---
+# Running the Project on a New Computer
+
+This document explains exactly how to run the project from scratch on another computer.
+
+Follow the steps in order.
+
+---
+
+# 1. Install Python
+
+The project was developed and tested using:
+
+Python 3.10+
+
+Check if Python is installed:
+
+python --version
+
+If Python is not installed, download it from:
+
+https://www.python.org/downloads/
+
+During installation make sure to enable:
+
+Add Python to PATH
+
+---
+
+# 2. Install required Python packages
+
+Open a terminal inside the project folder and run:
+
+pip install -r requirements.txt
+
+If the file requirements.txt does not exist, install manually:
+
+pip install colorama
+
+This library is used for colored logging output.
+
+---
+
+# 3. Install FFmpeg (optional but recommended)
+
+FFmpeg is used to convert downloaded video from .ts to .mp4 format.
+
+Check if FFmpeg is installed:
+
+ffmpeg -version
+
+If it is not installed, download it from:
+
+https://ffmpeg.org/download.html
+
+Add FFmpeg to the system PATH.
+
+If FFmpeg is not installed the program will still work, but the video will remain in .ts format instead of .mp4.
+
+Most video players such as VLC can still play .ts files.
+
+---
+
+# 4. Clone or download the project
+
+Clone the repository:
+
+git clone <https://github.com/Amitaibou/NetworkFinalProject.git>
+
+Then enter the project directory:
+
+cd finalProject
+
+If the project was downloaded as a ZIP file, simply extract it and open a terminal in the project root folder.
+
+---
+
+# 5. Prepare video segments
+
+The system streams segmented videos.
+
+Source videos must be placed in the following directory:
+
+video_sources/
+
+Example structure:
+
+video_sources/
+    video1.mp4
+    video2.mp4
+
+After placing the videos, run the preparation script:
+
+python prepare_video.py
+
+This script will automatically generate segmented videos in multiple quality levels.
+
+The script creates the following structure:
+
+assets/videos/video1/
+-    low/
+-    mid/
+-    high/
+
+assets/videos/video2/
+-    low/
+-    mid/
+-    high/
+
+Each folder contains multiple video segments.
+
+This step only needs to be performed once.
+
+---
+
+# 5. Important notes
+
+If the assets/videos folder is empty, run:
+
+python prepare_video.py
+
+before starting the servers.
+
+All servers must run in separate terminals.
+
+Do not close the servers while the client is downloading video.
+
+---
+
+End of instructions.
+
 
 ## 📌 Overview
 
@@ -132,7 +271,7 @@ python servers/dhcp_server.py
 ```
 ### 2️⃣ Start DNS Server
 ```bash
-python servers/app_server.py
+python servers/dns_server.py
 ```
 ### 3️⃣ Start Application Server
 ```bash

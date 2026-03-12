@@ -5,18 +5,11 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="dba34fd2-6535-4acf-8c4c-54b7a4416518" name="Changes" comment="">
-      <change afterPath="$PROJECT_DIR$/video_sources/4k.mp4" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/video_sources/politica.mp4" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/video_sources/python.mp4" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/client/app_client.py" beforeDir="false" afterPath="$PROJECT_DIR$/client/app_client.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/client/dhcp_client.py" beforeDir="false" afterPath="$PROJECT_DIR$/client/dhcp_client.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/client/dns_client.py" beforeDir="false" afterPath="$PROJECT_DIR$/client/dns_client.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/protocol/logger.py" beforeDir="false" afterPath="$PROJECT_DIR$/protocol/logger.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/protocol/rudp.py" beforeDir="false" afterPath="$PROJECT_DIR$/protocol/rudp.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/servers/app_server.py" beforeDir="false" afterPath="$PROJECT_DIR$/servers/app_server.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/servers/dhcp_server.py" beforeDir="false" afterPath="$PROJECT_DIR$/servers/dhcp_server.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/prepare_video.py" beforeDir="false" afterPath="$PROJECT_DIR$/prepare_video.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/servers/dns_server.py" beforeDir="false" afterPath="$PROJECT_DIR$/servers/dns_server.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />

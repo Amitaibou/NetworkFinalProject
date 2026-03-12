@@ -304,11 +304,11 @@ def choose_dns_name():
     domains = [
         "video.local",
         "app.local",
-        "ariel.local",
+        "ariel-university.local",
         "amitai-home.local",
         "ofri-home.local",
         "daniel-home.local",
-        "anna-home.local",
+        "anna-office.local",
     ]
 
     print("\nDNS options:")
