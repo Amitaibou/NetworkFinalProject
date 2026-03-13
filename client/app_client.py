@@ -148,6 +148,9 @@ class AppClient:
             except Exception:
                 pass
 
+        # "rudp = RUDP(sock)" – כדי למנוע תקיעה הוספנו timeout
+
+        sock.settimeout(15)
         rudp = RUDP(sock)
         rudp.reset_receiver()
 
@@ -166,14 +169,20 @@ class AppClient:
         start = time.time()
 
         # מקבלים חתיכות מידע עד שמגיע FIN מהצד השני
-        while True:
-            chunk, _, fin = rudp.receive()
+        try:
+            while True:
+                chunk, _, fin = rudp.receive()
 
-            if chunk:
-                data.extend(chunk)
+                if chunk:
+                    data.extend(chunk)
 
-            if fin:
-                break
+                if fin:
+                    break
+
+        except socket.timeout:
+            logger.error("RUDP receive timeout - segment may be missing")
+            sock.close()
+            return None, 0.0, {"transport": "RUDP", "mode": protocol, "error": "timeout"}
 
         end = time.time()
         sock.close()
@@ -451,9 +460,19 @@ def run_single_download(client):
         current_quality = quality
 
         if transport == "TCP":
-            data, bw, stats = client.download_segment_tcp(video, current_quality, segment)
+            try:
+                data, bw, stats = client.download_segment_tcp(video, current_quality, segment)
+            except (socket.error, socket.timeout, OSError, ConnectionError) as e:
+                logger.error(f"Segment {human_segment} failed: {e}")
+                completed_all_segments = False
+                break
         else:
-            data, bw, stats = client.download_segment_rudp(video, current_quality, segment, protocol)
+            try:
+                data, bw, stats = client.download_segment_rudp(video, current_quality, segment, protocol)
+            except (socket.error, socket.timeout, OSError, ConnectionError) as e:
+                logger.error(f"Segment {human_segment} failed: {e}")
+                completed_all_segments = False
+                break
 
         if not data:
             logger.error(f"Segment {human_segment}/{total_segments} not received")

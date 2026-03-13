@@ -53,9 +53,16 @@ class DNSClient:
             "domain": domain,
         }
 
-        # שולחים את השאילתה לשרת ה-DNS
-        self._send_json(query, (SERVER_HOST, DNS_PORT))
-        response, _ = self._recv_json()
+        # שולחים את השאילתה לשרת DNS
+        self._send_json(query, addr=(SERVER_HOST, DNS_PORT))
+
+        # response, _ = self._recv_json()
+
+        try:
+            response, _ = self._recv_json()
+        except socket.timeout:
+            print("[DNS CLIENT] Timeout - server unreachable")
+            return None
 
         if response.get("status") == "OK":
             ip = response["ip"]

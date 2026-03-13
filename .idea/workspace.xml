@@ -8,8 +8,21 @@
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/client/app_client.py" beforeDir="false" afterPath="$PROJECT_DIR$/client/app_client.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/prepare_video.py" beforeDir="false" afterPath="$PROJECT_DIR$/prepare_video.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/servers/dns_server.py" beforeDir="false" afterPath="$PROJECT_DIR$/servers/dns_server.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/client/dhcp_client.py" beforeDir="false" afterPath="$PROJECT_DIR$/client/dhcp_client.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/client/dns_client.py" beforeDir="false" afterPath="$PROJECT_DIR$/client/dns_client.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/client/downloads/4k/4k_RUDP_SR_AUTO_AUTO.mp4" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/client/downloads/4k/4k_RUDP_SR_AUTO_AUTO.ts" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/client/downloads/4k/4k_TCP_TCP_MANUAL_high.mp4" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/client/downloads/4k/4k_TCP_TCP_MANUAL_high.ts" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/client/downloads/barcelona/barcelona_RUDP_SR_AUTO_AUTO.mp4" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/client/downloads/barcelona/barcelona_RUDP_SR_AUTO_AUTO.ts" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/client/downloads/minion/minion_TCP_TCP_MANUAL_high.mp4" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/client/downloads/minion/minion_TCP_TCP_MANUAL_high.ts" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/client/downloads/politica/politica_RUDP_SR_MANUAL_high.mp4" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/client/downloads/politica/politica_RUDP_SR_MANUAL_high.ts" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/client/downloads/python/python_RUDP_SR_AUTO_AUTO.mp4" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/client/downloads/python/python_RUDP_SR_AUTO_AUTO.ts" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/servers/app_server.py" beforeDir="false" afterPath="$PROJECT_DIR$/servers/app_server.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />

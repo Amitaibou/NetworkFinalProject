@@ -99,14 +99,22 @@ class DHCPClient:
         offer = None
         server_addr = None
 
-        # מחכים ל-OFFER שמתאים גם ל-xid וגם ל-client_id שלנו
+        # מוודאים שגם xid וגם client_id תואמים ל-OFFER שחזר
         while True:
-            message, addr = self._recv_json()
+            # message, addr = self._recv_json()
+
+            try:
+                message, addr = self._recv_json()
+            except socket.timeout:
+                print("[DHCP CLIENT] No offer received (timeout)")
+                return None
 
             if message.get("type") != "OFFER":
                 continue
+
             if message.get("xid") != xid:
                 continue
+
             if message.get("client_id") != self.client_id:
                 continue
 
@@ -127,13 +135,19 @@ class DHCPClient:
         }
 
         self._send_json(request, server_addr)
-
         # מחכים ל-ACK או NAK
         while True:
-            message, _ = self._recv_json()
+            # message, _ = self._recv_json()
+
+            try:
+                message, _ = self._recv_json()
+            except socket.timeout:
+                print("[DHCP CLIENT] No ACK/NAK received (timeout)")
+                return None
 
             if message.get("xid") != xid:
                 continue
+
             if message.get("client_id") != self.client_id:
                 continue
 

@@ -52,10 +52,6 @@ pip install -r requirements.txt
 
 If the file requirements.txt does not exist, install manually:
 
-pip install colorama
-
-This library is used for colored logging output.
-
 ---
 
 # 3. Install FFmpeg (optional but recommended)

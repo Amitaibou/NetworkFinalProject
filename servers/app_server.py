@@ -211,6 +211,11 @@ class AppServer:
                     self.rudp.send_bytes(segment_data, addr)
                 except Exception as e:
                     logger.error(f"RUDP send failed: {e}")
+                    # שולחים הודעת שגיאה פשוטה ללקוח כדי שלא ייתקע בלולאת
+                    # "continue" בלי לדעת מה קרה
+
+                    err = {"type": "ERROR", "reason": "MISSING_SEGMENT"}
+                    self.udp_sock.sendto(json.dumps(err).encode(), addr)
                     continue
                 end = time.time()
 
